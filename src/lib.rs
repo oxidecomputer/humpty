@@ -14,7 +14,10 @@ pub const DUMP_REGISTER_MAGIC: [u8; 2] = [0xab, 0xba];
 pub const DUMPER_NONE: u8 = 0xff;
 pub const DUMPER_SOME: u8 = 0xbc;
 
-#[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
+const DUMP_SEGMENT_ALIGN: usize = 4;
+const DUMP_SEGMENT_MASK: usize = DUMP_SEGMENT_ALIGN - 1;
+
+#[derive(Copy, Clone, Debug, FromBytes, AsBytes, PartialEq)]
 #[repr(C, packed)]
 pub struct DumpAreaHeader {
     /// Magic to indicate that this is an area header
@@ -77,10 +80,11 @@ pub struct DumpRegister {
     pub val: u32,
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum DumpError<T> {
     BufferTooSmall,
     BufferTooSmallForCompression,
+    BufferSizeMisaligned,
     BadMagic(u32),
     BadDumpHeader(u32),
     BadHeaderRead(u32, T),
@@ -119,10 +123,11 @@ pub fn dump<T, const N: usize>(
     let seg_header_size = size_of::<DumpSegmentHeader>();
 
     //
-    // We would like to make this assertion:
+    // We would like to make these assertions:
     //
     //   const_assert!(N >= size_of::<DumpAreaHeader>());
     //   const_assert!(N >= Lzss::N2);
+    //   const_assert!(N & DUMP_SEGMENT_MASK == 0);
     //
     // But static_assertions do not (yet?) support const generics, so we make
     // this a runtime condition instead.
@@ -133,6 +138,10 @@ pub fn dump<T, const N: usize>(
 
     if N < DumpLzss::MIN_OFFSET * 2 {
         return Err(DumpError::BufferTooSmallForCompression);
+    }
+
+    if N & DUMP_SEGMENT_MASK != 0 {
+        return Err(DumpError::BufferSizeMisaligned);
     }
 
     let mut buf = [0u8; N];
@@ -193,7 +202,7 @@ pub fn dump<T, const N: usize>(
                 return Err(DumpError::BadDataRead(addr, e));
             }
 
-            let (c, rval) = DumpLzss::compress_in_place(&mut buf, offs);
+            let (mut c, rval) = DumpLzss::compress_in_place(&mut buf, offs);
 
             if let Some(over) = rval {
                 return Err(DumpError::CompressionOverflow(addr, nbytes, over));
@@ -207,6 +216,15 @@ pub fn dump<T, const N: usize>(
                 compressed_length: c as u16,
                 uncompressed_length: nbytes as u16,
             };
+
+            //
+            // SWD writes want to always be word-aligned, so we will put our
+            // segment pad at the end of our buffer.
+            //
+            while c & DUMP_SEGMENT_MASK != 0 {
+                buf[c] = DUMP_SEGMENT_PAD;
+                c += 1;
+            }
 
             let size = size_of::<DumpSegmentData>() + c;
 
