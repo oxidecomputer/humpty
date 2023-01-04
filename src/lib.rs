@@ -71,13 +71,25 @@ pub struct DumpSegmentData {
 #[repr(C, packed)]
 pub struct DumpRegister {
     /// Register magic -- must be DUMP_REGISTER_MAGIC
-    pub magic: u16,
+    pub magic: [u8; 2],
 
     /// Name of register
     pub register: u16,
 
     /// Value of register
-    pub val: u32,
+    pub value: u32,
+}
+
+pub struct RegisterRead(pub u16, pub u32);
+
+impl DumpRegister {
+    fn new(register: RegisterRead) -> Self {
+        DumpRegister {
+            magic: DUMP_REGISTER_MAGIC,
+            register: register.0,
+            value: register.1,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -99,6 +111,9 @@ pub enum DumpError<T> {
     OutOfSpace(u32),
     CorruptHeaderAddress(u32),
     CorruptSegments(u32),
+    BadRegisterRead(T),
+    BadRegisterWrite(u32, T),
+    OutOfRegisterSpace,
 }
 
 use core::mem::size_of;
@@ -110,12 +125,21 @@ use core::mem::size_of;
 pub type DumpLzss = lzss::Lzss<6, 4, 0x20, { 1 << 6 }, { 2 << 6 }>;
 
 ///
-/// This function performs the actual dumping.  It takes two closures:  one
-/// to read from an address into a buffer and one to write to an address from
-/// a buffer.
+/// This function performs the actual dumping.  It takes three closures:
+///
+/// - [`register_read`] reads a register value from the target to be made
+///   present in the dump (or [`None`] to denote that there are no more
+///   registers to read)
+///
+/// - [`read`] performs a read from the target from the specified address
+///   into the provided buffer
+///
+/// - [`write`] performs a write into the target at the specified address
+///   from the provided buffer
 ///
 pub fn dump<T, const N: usize>(
     base: u32,
+    mut register_read: impl FnMut() -> Result<Option<RegisterRead>, T>,
     mut read: impl FnMut(u32, &mut [u8]) -> Result<(), T>,
     mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
 ) -> Result<(), DumpError<T>> {
@@ -166,6 +190,34 @@ pub fn dump<T, const N: usize>(
         return Err(DumpError::CorruptHeaderAddress(base));
     }
 
+    //
+    // Before we do anything else, write our registers.  We assume that all of
+    // our registers can fit in our first dump segment; if they can't we will
+    // fail.
+    //
+    loop {
+        match register_read() {
+            Ok(None) => break,
+            Ok(Some(reg)) => {
+                let rheader = DumpRegister::new(reg);
+                let size = size_of::<DumpRegister>() as u32;
+
+                if header.written + size >= header.length {
+                    return Err(DumpError::OutOfRegisterSpace);
+                }
+
+                let raddr = header.address + header.written;
+
+                if let Err(e) = write(raddr, rheader.as_bytes()) {
+                    return Err(DumpError::BadRegisterWrite(raddr, e));
+                }
+
+                header.written += size;
+            }
+            Err(e) => return Err(DumpError::BadRegisterRead(e)),
+        }
+    }
+
     let nsegments = header.nsegments as usize;
     let mut haddr = base;
 
@@ -209,7 +261,7 @@ pub fn dump<T, const N: usize>(
             }
 
             //
-            // Our buffer now has our compressed data.  Prepare our header..
+            // Our buffer now has our compressed data.  Prepare our header.
             //
             let dheader = DumpSegmentData {
                 address: addr,
@@ -229,7 +281,7 @@ pub fn dump<T, const N: usize>(
             let size = size_of::<DumpSegmentData>() + c;
 
             //
-            // ..and now find a spot to write it.
+            // ...and now find a spot to write it.
             //
             while header.written + size as u32 >= header.length {
                 //
