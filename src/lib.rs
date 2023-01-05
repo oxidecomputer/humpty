@@ -153,7 +153,7 @@ pub fn dump<T, const N: usize, const V: u8>(
     //   const_assert!(N >= size_of::<DumpAreaHeader>());
     //   const_assert!(N >= Lzss::N2);
     //   const_assert!(N & DUMP_SEGMENT_MASK == 0);
-    //   const_assert!(V != DUMPER_NONE && V != DUMPER_EMULATED);
+    //   const_assert!(V != DUMPER_NONE);
     //
     // But static_assertions do not (yet?) support const generics, so we make
     // this a runtime condition instead.
@@ -170,7 +170,7 @@ pub fn dump<T, const N: usize, const V: u8>(
         return Err(DumpError::BufferSizeMisaligned);
     }
 
-    if V == DUMPER_NONE || V == DUMPER_EMULATED {
+    if V == DUMPER_NONE {
         return Err(DumpError::InvalidDumperVersion);
     }
 
