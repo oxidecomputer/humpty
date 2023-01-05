@@ -100,6 +100,7 @@ pub enum DumpError<T> {
     InvalidDumperVersion,
     BadMagic(u32),
     BadDumpHeader(u32),
+    DumpAlreadyExists,
     BadHeaderRead(u32, T),
     BadSegmentHeader(u32),
     BadSegmentHeaderRead(u32, T),
@@ -194,6 +195,10 @@ pub fn dump<T, const N: usize, const V: u8>(
 
     if header.address != base {
         return Err(DumpError::CorruptHeaderAddress(base));
+    }
+
+    if header.dumper_version != DUMPER_NONE {
+        return Err(DumpError::DumpAlreadyExists);
     }
 
     //
