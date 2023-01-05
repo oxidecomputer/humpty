@@ -12,7 +12,7 @@ pub const DUMP_SEGMENT_PAD: u8 = 0x55;
 pub const DUMP_REGISTER_MAGIC: [u8; 2] = [0xab, 0xba];
 
 pub const DUMPER_NONE: u8 = 0xff;
-pub const DUMPER_SOME: u8 = 0xbc;
+pub const DUMPER_EMULATED: u8 = 0xfe;
 
 const DUMP_SEGMENT_ALIGN: usize = 4;
 const DUMP_SEGMENT_MASK: usize = DUMP_SEGMENT_ALIGN - 1;
@@ -97,6 +97,7 @@ pub enum DumpError<T> {
     BufferTooSmall,
     BufferTooSmallForCompression,
     BufferSizeMisaligned,
+    InvalidDumperVersion,
     BadMagic(u32),
     BadDumpHeader(u32),
     BadHeaderRead(u32, T),
@@ -115,8 +116,6 @@ pub enum DumpError<T> {
     BadRegisterWrite(u32, T),
     OutOfRegisterSpace,
 }
-
-use core::mem::size_of;
 
 //
 // This is sized to allow for reasonably small buffers for [`dump`] -- down
@@ -137,12 +136,14 @@ pub type DumpLzss = lzss::Lzss<6, 4, 0x20, { 1 << 6 }, { 2 << 6 }>;
 /// - [`write`] performs a write into the target at the specified address
 ///   from the provided buffer
 ///
-pub fn dump<T, const N: usize>(
+pub fn dump<T, const N: usize, const V: u8>(
     base: u32,
     mut register_read: impl FnMut() -> Result<Option<RegisterRead>, T>,
     mut read: impl FnMut(u32, &mut [u8]) -> Result<(), T>,
     mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
 ) -> Result<(), DumpError<T>> {
+    use core::mem::size_of;
+
     const HEADER_SIZE: usize = size_of::<DumpAreaHeader>();
     let seg_header_size = size_of::<DumpSegmentHeader>();
 
@@ -152,6 +153,7 @@ pub fn dump<T, const N: usize>(
     //   const_assert!(N >= size_of::<DumpAreaHeader>());
     //   const_assert!(N >= Lzss::N2);
     //   const_assert!(N & DUMP_SEGMENT_MASK == 0);
+    //   const_assert!(V != DUMPER_NONE && V != DUMPER_EMULATED);
     //
     // But static_assertions do not (yet?) support const generics, so we make
     // this a runtime condition instead.
@@ -166,6 +168,10 @@ pub fn dump<T, const N: usize>(
 
     if N & DUMP_SEGMENT_MASK != 0 {
         return Err(DumpError::BufferSizeMisaligned);
+    }
+
+    if V == DUMPER_NONE || V == DUMPER_EMULATED {
+        return Err(DumpError::InvalidDumperVersion);
     }
 
     let mut buf = [0u8; N];
@@ -288,7 +294,7 @@ pub fn dump<T, const N: usize>(
                 // We are out of room in this area; we need to write our header.
                 //
                 let next = header.next;
-                header.dumper_version = DUMPER_SOME;
+                header.dumper_version = V;
 
                 if let Err(e) = write(haddr, header.as_bytes()) {
                     return Err(DumpError::BadHeaderWrite(haddr, e));
@@ -355,7 +361,7 @@ pub fn dump<T, const N: usize>(
     //
     // We're done!  We need to write out our last header.
     //
-    header.dumper_version = DUMPER_SOME;
+    header.dumper_version = V;
 
     if let Err(e) = write(haddr, header.as_bytes()) {
         return Err(DumpError::BadFinalHeaderWrite(haddr, e));
