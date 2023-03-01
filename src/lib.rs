@@ -4,14 +4,19 @@
 
 #![no_std]
 
-use zerocopy::{AsBytes, FromBytes};
 use hubpack::SerializedSize;
 use serde::{Deserialize, Serialize};
+use zerocopy::{AsBytes, FromBytes};
 
 pub const DUMP_MAGIC: [u8; 4] = [0x1, 0xde, 0xde, 0xad];
 pub const DUMP_UNINITIALIZED: [u8; 4] = [0xba, 0xd, 0xca, 0xfe];
 pub const DUMP_SEGMENT_PAD: u8 = 0x55;
+
+const DUMP_SEGMENT_ALIGN: usize = 4;
+const DUMP_SEGMENT_MASK: usize = DUMP_SEGMENT_ALIGN - 1;
+
 pub const DUMP_REGISTER_MAGIC: [u8; 2] = [0xab, 0xba];
+pub const DUMP_TASK_MAGIC: [u8; 2] = [0xda, 0xda];
 
 pub const DUMPER_NONE: u8 = 0xff;
 pub const DUMPER_EMULATED: u8 = 0xfe;
@@ -23,7 +28,9 @@ pub const DUMP_AGENT_JEFE: u8 = 1;
 pub const DUMP_AGENT_TASK: u8 = 2;
 pub const DUMP_AGENT_INVALID: u8 = 0xff;
 
-#[derive(Copy, Clone, Debug, SerializedSize, Serialize, Deserialize, PartialEq)]
+#[derive(
+    Copy, Clone, Debug, SerializedSize, Serialize, Deserialize, PartialEq,
+)]
 pub enum DumpAgent {
     None,
     Jefe,
@@ -53,10 +60,9 @@ impl From<DumpAgent> for u8 {
     }
 }
 
-const DUMP_SEGMENT_ALIGN: usize = 4;
-const DUMP_SEGMENT_MASK: usize = DUMP_SEGMENT_ALIGN - 1;
-
-#[derive(Copy, Clone, Debug, SerializedSize, Serialize, Deserialize, PartialEq)]
+#[derive(
+    Copy, Clone, Debug, SerializedSize, Serialize, Deserialize, PartialEq,
+)]
 pub struct DumpArea {
     pub address: u32,
     pub length: u32,
@@ -99,6 +105,38 @@ pub struct DumpSegmentHeader {
     pub length: u32,
 }
 
+pub enum DumpSegment {
+    Data(DumpSegmentData),
+    Register(DumpRegister),
+    Task(DumpTask),
+    Unknown([u8; 2]),
+}
+
+impl DumpSegment {
+    pub fn from(dump: &[u8]) -> Option<Self> {
+        if dump.len() < 2 {
+            None
+        } else if dump[..2] == DUMP_REGISTER_MAGIC {
+            match DumpRegister::read_from_prefix(dump) {
+                Some(reg) => Some(DumpSegment::Register(reg)),
+                None => None,
+            }
+        } else if dump[..2] == DUMP_TASK_MAGIC {
+            match DumpTask::read_from_prefix(dump) {
+                Some(task) => Some(DumpSegment::Task(task)),
+                None => None,
+            }
+        } else if (dump[0] as usize) & DUMP_SEGMENT_MASK != 0 {
+            Some(DumpSegment::Unknown([dump[0], dump[1]]))
+        } else {
+            match DumpSegmentData::read_from_prefix(dump) {
+                Some(data) => Some(DumpSegment::Data(data)),
+                None => None,
+            }
+        }
+    }
+}
+
 //
 // A segment of actual data, as stored by the dumper into the dump area(s).  Note
 // that we very much depend on endianness here:  any unused space at the end of
@@ -138,6 +176,25 @@ impl DumpRegister {
     }
 }
 
+#[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
+#[repr(C, packed)]
+pub struct DumpTask {
+    /// task magic -- must be DUMP_TASK_MAGIC
+    pub magic: [u8; 2],
+
+    /// ID of task that is dumped here (task IDs are maximum 15 bits)
+    pub task: u16,
+
+    /// Time that task was dumped
+    pub time: u64,
+}
+
+impl DumpTask {
+    pub fn new(task: u16, time: u64) -> Self {
+        DumpTask { magic: DUMP_TASK_MAGIC, task, time }
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum DumpError<T> {
     BufferTooSmall,
@@ -168,6 +225,9 @@ pub enum DumpError<T> {
     InvalidAgent,
     OutOfSpaceForSegments,
     BadSegmentWrite(u32, T),
+    OutOfTaskSpace,
+    BadTaskWrite(u32, T),
+    UnalignedSegmentAddress(u32),
 }
 
 //
@@ -177,18 +237,16 @@ pub enum DumpError<T> {
 pub type DumpLzss = lzss::Lzss<6, 4, 0x20, { 1 << 6 }, { 2 << 6 }>;
 
 pub fn from_mem(addr: u32, buf: &mut [u8]) -> Result<(), ()> {
-    let src = unsafe {
-        core::slice::from_raw_parts(addr as *const u8, buf.len())
-    };
+    let src =
+        unsafe { core::slice::from_raw_parts(addr as *const u8, buf.len()) };
 
     buf.copy_from_slice(src);
     Ok(())
 }
 
 pub fn to_mem(addr: u32, buf: &[u8]) -> Result<(), ()> {
-    let dest = unsafe {
-        core::slice::from_raw_parts_mut(addr as *mut u8, buf.len())
-    };
+    let dest =
+        unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, buf.len()) };
 
     // dest.copy_from_slice(buf); doesn't work here?!
     for i in 0..buf.len() {
@@ -243,12 +301,12 @@ pub fn initialize_dump_areas(areas: &[DumpArea]) -> Option<u32> {
 
 ///
 /// This should only be called in the context of the dump agent proxy.
-/// 
+///
 pub fn get_dump_area<T>(
     base: u32,
     index: u8,
     mut read: impl FnMut(u32, &mut [u8]) -> Result<(), T>,
-) -> Result<DumpArea, DumpError<T>> { 
+) -> Result<DumpArea, DumpError<T>> {
     let mut address = base;
     let mut i = 0;
     const HEADER_SIZE: usize = core::mem::size_of::<DumpAreaHeader>();
@@ -304,7 +362,7 @@ pub fn claim_dump_area<T>(
     claimall: bool,
     mut read: impl FnMut(u32, &mut [u8]) -> Result<(), T>,
     mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
-) -> Result<Option<DumpArea>, DumpError<T>> { 
+) -> Result<Option<DumpArea>, DumpError<T>> {
     let mut address = base;
     let mut rval = None;
     let agent: u8 = agent.into();
@@ -397,7 +455,7 @@ pub fn add_dump_segment<T>(
     length: u32,
     mut read: impl FnMut(u32, &mut [u8]) -> Result<(), T>,
     mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
-) -> Result<(), DumpError<T>> { 
+) -> Result<(), DumpError<T>> {
     const HEADER_SIZE: usize = core::mem::size_of::<DumpAreaHeader>();
     const SEG_SIZE: usize = core::mem::size_of::<DumpSegmentHeader>();
 
@@ -446,6 +504,14 @@ pub fn add_dump_segment<T>(
         }
     };
 
+    //
+    // We enforce that addresses are at least 32-bit aligned to be able to
+    // use the lower bits to denote a special segment.
+    //
+    if addr & DUMP_SEGMENT_MASK as u32 != 0 {
+        return Err(DumpError::UnalignedSegmentAddress(addr));
+    }
+
     segment.address = addr;
     segment.length = length;
 
@@ -478,6 +544,7 @@ pub fn add_dump_segment<T>(
 ///
 pub fn dump<T, const N: usize, const V: u8>(
     base: u32,
+    task: Option<DumpTask>,
     mut register_read: impl FnMut() -> Result<Option<RegisterRead>, T>,
     mut read: impl FnMut(u32, &mut [u8]) -> Result<(), T>,
     mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
@@ -541,6 +608,25 @@ pub fn dump<T, const N: usize, const V: u8>(
     }
 
     let agent = header.agent;
+
+    //
+    // If we are dumping a task, create that metadata now.
+    //
+    if let Some(ref task) = task {
+        let size = size_of::<DumpTask>() as u32;
+
+        if header.written + size >= header.length {
+            return Err(DumpError::OutOfTaskSpace);
+        }
+
+        let taddr = header.address + header.written;
+
+        if let Err(e) = write(taddr, task.as_bytes()) {
+            return Err(DumpError::BadTaskWrite(taddr, e));
+        }
+
+        header.written += size;
+    }
 
     //
     // Before we do anything else, write our registers.  We assume that all of
