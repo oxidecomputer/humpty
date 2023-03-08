@@ -32,9 +32,16 @@ pub const DUMP_AGENT_INVALID: u8 = 0xff;
     Copy, Clone, Debug, SerializedSize, Serialize, Deserialize, PartialEq,
 )]
 pub enum DumpAgent {
+    /// No dump agent set
     None,
+
+    /// Dump agent is Jefe, acting to dump a single task
     Jefe,
+
+    /// Dump agent is a dedicated task, acting to dump entire system
     Task,
+
+    /// Dump agent is unknown
     Unknown,
 }
 
@@ -70,7 +77,7 @@ pub struct DumpArea {
 }
 
 #[derive(Copy, Clone, Debug, FromBytes, AsBytes, PartialEq)]
-#[repr(C, packed)]
+#[repr(C)]
 pub struct DumpAreaHeader {
     /// Magic to indicate that this is an area header
     pub magic: [u8; 4],
@@ -99,7 +106,7 @@ pub struct DumpAreaHeader {
 }
 
 #[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
-#[repr(C, packed)]
+#[repr(C)]
 pub struct DumpSegmentHeader {
     pub address: u32,
     pub length: u32,
@@ -143,7 +150,7 @@ impl DumpSegment {
 // of a single area will be filled with DUMP_SEGMENT_PAD.
 //
 #[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
-#[repr(C, packed)]
+#[repr(C)]
 #[cfg(target_endian = "little")]
 pub struct DumpSegmentData {
     pub address: u32,
@@ -152,7 +159,7 @@ pub struct DumpSegmentData {
 }
 
 #[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
-#[repr(C, packed)]
+#[repr(C)]
 pub struct DumpRegister {
     /// Register magic -- must be DUMP_REGISTER_MAGIC
     pub magic: [u8; 2],
@@ -177,21 +184,24 @@ impl DumpRegister {
 }
 
 #[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
-#[repr(C, packed)]
+#[repr(C)]
 pub struct DumpTask {
     /// task magic -- must be DUMP_TASK_MAGIC
     pub magic: [u8; 2],
 
     /// ID of task that is dumped here (task IDs are maximum 15 bits)
-    pub task: u16,
+    pub id: u16,
+
+    /// Padding to allow for time
+    pub pad: u32,
 
     /// Time that task was dumped
     pub time: u64,
 }
 
 impl DumpTask {
-    pub fn new(task: u16, time: u64) -> Self {
-        DumpTask { magic: DUMP_TASK_MAGIC, task, time }
+    pub fn new(id: u16, time: u64) -> Self {
+        DumpTask { magic: DUMP_TASK_MAGIC, id, pad: 0, time }
     }
 }
 
@@ -359,19 +369,23 @@ pub fn get_dump_area<T>(
 pub fn claim_dump_area<T>(
     base: u32,
     agent: DumpAgent,
-    claimall: bool,
     mut read: impl FnMut(u32, &mut [u8]) -> Result<(), T>,
     mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
 ) -> Result<Option<DumpArea>, DumpError<T>> {
     let mut address = base;
     let mut rval = None;
+
+    let claimall = match agent {
+        DumpAgent::Jefe => false,
+        DumpAgent::Task => true,
+        _ => {
+            return Err(DumpError::InvalidAgent);
+        }
+    };
+
     let agent: u8 = agent.into();
 
     const HEADER_SIZE: usize = core::mem::size_of::<DumpAreaHeader>();
-
-    if agent == DUMP_AGENT_NONE {
-        return Err(DumpError::InvalidAgent);
-    }
 
     loop {
         let mut hbuf = [0u8; HEADER_SIZE];
