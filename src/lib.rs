@@ -246,7 +246,7 @@ pub enum DumpError<T> {
 //
 pub type DumpLzss = lzss::Lzss<6, 4, 0x20, { 1 << 6 }, { 2 << 6 }>;
 
-pub fn from_mem(addr: u32, buf: &mut [u8]) -> Result<(), ()> {
+pub fn from_mem(addr: u32, buf: &mut [u8], _meta: bool) -> Result<(), ()> {
     let src =
         unsafe { core::slice::from_raw_parts(addr as *const u8, buf.len()) };
 
@@ -315,7 +315,7 @@ pub fn initialize_dump_areas(areas: &[DumpArea]) -> Option<u32> {
 pub fn get_dump_area<T>(
     base: u32,
     index: u8,
-    mut read: impl FnMut(u32, &mut [u8]) -> Result<(), T>,
+    mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
 ) -> Result<DumpArea, DumpError<T>> {
     let mut address = base;
     let mut i = 0;
@@ -324,7 +324,7 @@ pub fn get_dump_area<T>(
     loop {
         let mut hbuf = [0u8; HEADER_SIZE];
 
-        if let Err(e) = read(address, &mut hbuf[..]) {
+        if let Err(e) = read(address, &mut hbuf[..], true) {
             return Err(DumpError::BadHeaderRead(address, e));
         }
 
@@ -369,7 +369,7 @@ pub fn get_dump_area<T>(
 pub fn claim_dump_area<T>(
     base: u32,
     agent: DumpAgent,
-    mut read: impl FnMut(u32, &mut [u8]) -> Result<(), T>,
+    mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
     mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
 ) -> Result<Option<DumpArea>, DumpError<T>> {
     let mut address = base;
@@ -390,7 +390,7 @@ pub fn claim_dump_area<T>(
     loop {
         let mut hbuf = [0u8; HEADER_SIZE];
 
-        if let Err(e) = read(address, &mut hbuf[..]) {
+        if let Err(e) = read(address, &mut hbuf[..], true) {
             return Err(DumpError::BadHeaderRead(address, e));
         }
 
@@ -467,7 +467,7 @@ pub fn add_dump_segment<T>(
     base: u32,
     addr: u32,
     length: u32,
-    mut read: impl FnMut(u32, &mut [u8]) -> Result<(), T>,
+    mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
     mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
 ) -> Result<(), DumpError<T>> {
     const HEADER_SIZE: usize = core::mem::size_of::<DumpAreaHeader>();
@@ -476,7 +476,7 @@ pub fn add_dump_segment<T>(
     let mut hbuf = [0u8; HEADER_SIZE];
     let mut sbuf = [0u8; SEG_SIZE];
 
-    if let Err(e) = read(base, &mut hbuf[..]) {
+    if let Err(e) = read(base, &mut hbuf[..], true) {
         return Err(DumpError::BadHeaderRead(base, e));
     }
 
@@ -507,7 +507,7 @@ pub fn add_dump_segment<T>(
 
     let saddr = base + offset as u32;
 
-    if let Err(e) = read(saddr, &mut sbuf[..]) {
+    if let Err(e) = read(saddr, &mut sbuf[..], true) {
         return Err(DumpError::BadSegmentHeaderRead(saddr, e));
     }
 
@@ -560,7 +560,7 @@ pub fn dump<T, const N: usize, const V: u8>(
     base: u32,
     task: Option<DumpTask>,
     mut register_read: impl FnMut() -> Result<Option<RegisterRead>, T>,
-    mut read: impl FnMut(u32, &mut [u8]) -> Result<(), T>,
+    mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
     mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
 ) -> Result<(), DumpError<T>> {
     use core::mem::size_of;
@@ -598,7 +598,7 @@ pub fn dump<T, const N: usize, const V: u8>(
     let mut buf = [0u8; N];
     let mut hbuf = [0u8; HEADER_SIZE];
 
-    if let Err(e) = read(base, &mut hbuf[..]) {
+    if let Err(e) = read(base, &mut hbuf[..], true) {
         return Err(DumpError::BadHeaderRead(base, e));
     }
 
@@ -676,7 +676,7 @@ pub fn dump<T, const N: usize, const V: u8>(
     for seg in 0..nsegments {
         let saddr = base + (HEADER_SIZE + seg * seg_header_size) as u32;
 
-        if let Err(e) = read(saddr, &mut buf[..seg_header_size]) {
+        if let Err(e) = read(saddr, &mut buf[..seg_header_size], true) {
             return Err(DumpError::BadSegmentHeaderRead(saddr, e));
         }
 
@@ -702,7 +702,7 @@ pub fn dump<T, const N: usize, const V: u8>(
             let offs = buf.len() - nbytes;
             let len = buf.len();
 
-            if let Err(e) = read(addr, &mut buf[offs..len]) {
+            if let Err(e) = read(addr, &mut buf[offs..len], false) {
                 return Err(DumpError::BadDataRead(addr, e));
             }
 
@@ -753,7 +753,7 @@ pub fn dump<T, const N: usize, const V: u8>(
                     return Err(DumpError::OutOfSpace(addr));
                 }
 
-                if let Err(e) = read(haddr, &mut hbuf[..]) {
+                if let Err(e) = read(haddr, &mut hbuf[..], true) {
                     return Err(DumpError::BadHeaderRead(haddr, e));
                 }
 
