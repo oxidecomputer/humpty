@@ -183,7 +183,7 @@ impl DumpRegister {
     }
 }
 
-#[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, FromBytes, AsBytes, PartialEq)]
 #[repr(C)]
 pub struct DumpTask {
     /// task magic -- must be DUMP_TASK_MAGIC
@@ -269,40 +269,54 @@ pub fn to_mem(addr: u32, buf: &[u8]) -> Result<(), ()> {
 ///
 /// Initialize the dump areas based on the specified list.
 ///
-pub fn initialize_dump_areas(areas: &[DumpArea]) -> Option<u32> {
+pub fn initialize_dump_areas(areas: &[DumpArea], chunksize: Option<usize>) -> Option<u32> {
     let mut next = 0;
 
     for area in areas.iter().rev() {
-        unsafe {
-            let header = area.address as *mut DumpAreaHeader;
+        let chunksize = match chunksize {
+            Some(chunksize) => chunksize,
+            None => area.length as usize,
+        };
 
-            //
-            // We initialize our dump header with deliberately bad magic
-            // to prevent any dumps until we have everything initialized
-            //
-            (*header) = DumpAreaHeader {
-                magic: DUMP_UNINITIALIZED,
-                address: area.address,
-                nsegments: 0,
-                written: core::mem::size_of::<DumpAreaHeader>() as u32,
-                length: area.length,
-                agent: area.agent.into(),
-                dumper: DUMPER_NONE,
-                next,
+        let length = area.length.min(chunksize as u32);
+
+        for offset in (0..area.length).step_by(chunksize).rev() {
+            let address = area.address + offset;
+
+            unsafe {
+                let header = address as *mut DumpAreaHeader;
+
+                //
+                // We initialize our dump headers with deliberately bad magic
+                // to prevent any dumps until we have everything initialized
+                //
+                (*header) = DumpAreaHeader {
+                    magic: DUMP_UNINITIALIZED,
+                    address: address,
+                    nsegments: 0,
+                    written: core::mem::size_of::<DumpAreaHeader>() as u32,
+                    length: length,
+                    agent: area.agent.into(),
+                    dumper: DUMPER_NONE,
+                    next,
+                }
             }
-        }
 
-        next = area.address;
-    }
-
-    for area in areas.iter() {
-        unsafe {
-            let header = area.address as *mut DumpAreaHeader;
-            (*header).magic = DUMP_MAGIC;
+            next = address;
         }
     }
 
     if areas.len() > 0 {
+        let mut address = areas[0].address;
+
+        while address != 0 {
+            unsafe {
+                let header = address as *mut DumpAreaHeader;
+                (*header).magic = DUMP_MAGIC;
+                address = (*header).next;
+            }
+        }
+
         Some(areas[0].address)
     } else {
         None
