@@ -306,31 +306,10 @@ pub fn from_mem(addr: u32, buf: &mut [u8], _meta: bool) -> Result<(), ()> {
 
 #[allow(clippy::result_unit_err)]
 pub fn to_mem(addr: u32, buf: &[u8]) -> Result<(), ()> {
-    //
-    // This is is a bit of a mystery.  If this routine is inlined, and we
-    // use dest.copy_from_slice() OR ptr::copy() on the raw pointer
-    // (or ptr::copy_nonoverlapping()), we will die on an unaligned store
-    // when we attempt to claim an area.  (Specifically, when we store the
-    // dump area header that includes the contents.)
-    //
-    // That is, we would like to write this this way:
-    //
-    // unsafe {
-    //    core::ptr::copy(buf.as_ptr(), addr as *mut u8, buf.len());
-    // }
-    //
-    // This, however, will result in an unaligned store. (!)
-    //
-    // So we instead do an entirely manual copy, which absolutely works.
-    //
     let dest =
         unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, buf.len()) };
 
-    #[allow(clippy::manual_memcpy)]
-    for i in 0..buf.len() {
-        dest[i] = buf[i];
-    }
-
+    dest.copy_from_slice(buf);
     Ok(())
 }
 
