@@ -11,7 +11,7 @@ Our nomenclature:
 
 - *Dump area*:  a contiguous area of RAM within Hubris that holds all or
   part of a dump.  This is an area of RAM that is not otherwise used by
-  the system and (obviously?) shouldn't itself be deumped.
+  the system and (obviously?) shouldn't itself be dumped.
 
 - *Dump contents*:  the contents of a dump area, and can be either a task
   (or part of a task) or the entire system (or part of it).  If an area is
@@ -20,7 +20,7 @@ Our nomenclature:
 
 - *Dump segment header*:  a header describing a contiguous region of memory
   to be written into a dump.  These are added to a dump area via
-  `add_dump_segment_header`.
+  [`add_dump_segment_header`].
 
 - *Dump segment*:  the actual data itself in a dump.  This can have the form
   of data (always compressed), or some limited metadata (registers and
@@ -38,11 +38,12 @@ Our nomenclature:
   areas such as they are available.  (Jefe, the dedicated dumper task, and
   Humility in its emulation modes can all act as the dumper.)
 
-In Hubris, Jefe acts as the dump agent proxy, and (in the case of task
-dumps) also serves as the dump agent and the dumper.  For system dumps,
-the dedicated dump agent serves as the agent, and an outside system
-(either Humility in its emulation modes or a disjoint microcontroller
-connected via SWD) acts as the dumper.
+In Hubris, Jefe always acts as the dump agent proxy.  In the case of task
+dumps, Jefe also serves as the dump agent and the dumper (via kernel
+facilities to read task memory).  For system dumps, the dedicated dump
+agent serves as the agent, and an outside system (either Humility in its
+emulation modes or a disjoint microcontroller running Hubris and connected
+via SWD) acts as the dumper.
 
 Regardless of which bodies are playing which part, the flow is:
 
@@ -50,7 +51,7 @@ Regardless of which bodies are playing which part, the flow is:
 
  2. Dump agent adds segment headers to describe the data to be dumped.
 
- 3. Dumper calls `dump` to actually do the dumping.  `dump` will
+ 3. Dumper calls [`dump`] to actually do the dumping.  [`dump`] will
     read and write to memory via the passed closures.
 
  4. Dump is retrieved by Humility for decompressing and processing.
