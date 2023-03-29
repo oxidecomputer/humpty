@@ -4,21 +4,137 @@
 
 #![no_std]
 
+//! humpty: Hubris/Humility dump manipulation
+//!
+//! This is a no_std crate that allows for dumping the system or some number
+//! of tasks to a specified region of memory.  This crate is used by several
+//! different consumers across several different domains, and is used by both
+//! Hubris and Humility.
+//!
+//! Our nomenclature:
+//!
+//! - *Dump area*:  a contiguous area of RAM within Hubris that holds all or
+//!   part of a dump.  This is an area of RAM that is not otherwise used by
+//!   the system and (obviously?) shouldn't itself be dumped.
+//!
+//! - *Dump contents*:  the contents of a dump area, and can be either a task
+//!   (or part of a task) or the entire system (or part of it).  If an area is
+//!   used for part of the system, all dump areas are used to dump the system.
+//!   (That is, task dumps cannot be interspersed with system dumps.)
+//!
+//! - *Dump segment header*:  a header describing a contiguous region of memory
+//!   to be written into a dump.  These are added to a dump area via
+//!   [`add_dump_segment_header`].
+//!
+//! - *Dump segment*:  the actual data itself in a dump.  This can have the form
+//!   of data (always compressed), or some limited metadata (registers and
+//!   task information, if any).  If there is both metadata and data, the
+//!   metadata will always precede the data.
+//!
+//! - *Dump agent proxy*.  The body of software that creates dump areas and
+//!   doles them out to dump agents.
+//!
+//! - *Dump agent*. The software that claims a dump area from the dump agent
+//!   proxy for the purpose of arranging dumping into it.
+//!
+//! - *Dumper*.  The body of software that actually performs the dumping:
+//!   knowing only the address of a dump area, it will dump contents into dump
+//!   areas such as they are available.  (Jefe, the dedicated dumper task, and
+//!   Humility in its emulation modes can all act as the dumper.)
+//!
+//! In Hubris, Jefe always acts as the dump agent proxy.  In the case of task
+//! dumps, Jefe also serves as the dump agent and the dumper (via kernel
+//! facilities to read task memory).  For system dumps, the dedicated dump
+//! agent serves as the agent, and an outside system (either Humility in its
+//! emulation modes or a disjoint microcontroller running Hubris and connected
+//! via SWD) acts as the dumper.
+//!
+//! Regardless of which bodies are playing which part, the flow is:
+//!
+//!  1. Dump agent asks dump agent proxy to claim an area on its behalf.
+//!
+//!  2. Dump agent adds segment headers to describe the data to be dumped.
+//!
+//!  3. Dumper calls [`dump`] to actually do the dumping.  [`dump`] will
+//!     read and write to memory via the passed closures.
+//!
+//!  4. Dump is retrieved by Humility for decompressing and processing.
+//!
+
+use hubpack::SerializedSize;
+use serde::{Deserialize, Serialize};
 use zerocopy::{AsBytes, FromBytes};
 
 pub const DUMP_MAGIC: [u8; 4] = [0x1, 0xde, 0xde, 0xad];
 pub const DUMP_UNINITIALIZED: [u8; 4] = [0xba, 0xd, 0xca, 0xfe];
 pub const DUMP_SEGMENT_PAD: u8 = 0x55;
-pub const DUMP_REGISTER_MAGIC: [u8; 2] = [0xab, 0xba];
-
-pub const DUMPER_NONE: u8 = 0xff;
-pub const DUMPER_EMULATED: u8 = 0xfe;
 
 const DUMP_SEGMENT_ALIGN: usize = 4;
 const DUMP_SEGMENT_MASK: usize = DUMP_SEGMENT_ALIGN - 1;
 
-#[derive(Copy, Clone, Debug, FromBytes, AsBytes, PartialEq)]
-#[repr(C, packed)]
+pub const DUMP_REGISTER_MAGIC: [u8; 2] = [0xab, 0xba];
+pub const DUMP_TASK_MAGIC: [u8; 2] = [0xda, 0xda];
+
+pub const DUMPER_NONE: u8 = 0xff;
+pub const DUMPER_EMULATED: u8 = 0xfe;
+pub const DUMPER_EXTERNAL: u8 = 1;
+pub const DUMPER_JEFE: u8 = 2;
+
+pub const DUMP_CONTENTS_AVAILABLE: u8 = 0;
+pub const DUMP_CONTENTS_SINGLETASK: u8 = 1;
+pub const DUMP_CONTENTS_WHOLESYSTEM: u8 = 2;
+pub const DUMP_CONTENTS_INVALID: u8 = 0xff;
+
+#[derive(
+    Copy, Clone, Debug, SerializedSize, Serialize, Deserialize, PartialEq, Eq,
+)]
+pub enum DumpContents {
+    /// Dump area is available
+    Available,
+
+    /// Dump area contains all/part of a single task
+    SingleTask,
+
+    /// Dump area contains all/part of the whole system
+    WholeSystem,
+
+    /// Dump area contains unknown contents
+    Unknown,
+}
+
+impl From<u8> for DumpContents {
+    fn from(val: u8) -> Self {
+        match val {
+            DUMP_CONTENTS_AVAILABLE => DumpContents::Available,
+            DUMP_CONTENTS_SINGLETASK => DumpContents::SingleTask,
+            DUMP_CONTENTS_WHOLESYSTEM => DumpContents::WholeSystem,
+            _ => DumpContents::Unknown,
+        }
+    }
+}
+
+impl From<DumpContents> for u8 {
+    fn from(val: DumpContents) -> Self {
+        match val {
+            DumpContents::Available => DUMP_CONTENTS_AVAILABLE,
+            DumpContents::SingleTask => DUMP_CONTENTS_SINGLETASK,
+            DumpContents::WholeSystem => DUMP_CONTENTS_WHOLESYSTEM,
+            _ => DUMP_CONTENTS_INVALID,
+        }
+    }
+}
+
+#[derive(
+    Copy, Clone, Debug, SerializedSize, Serialize, Deserialize, PartialEq, Eq,
+)]
+pub struct DumpArea {
+    pub address: u32,
+    pub length: u32,
+    pub contents: DumpContents,
+}
+
+#[derive(Copy, Clone, Debug, FromBytes, AsBytes, PartialEq, Eq)]
+#[repr(C)]
 pub struct DumpAreaHeader {
     /// Magic to indicate that this is an area header
     pub magic: [u8; 4],
@@ -33,11 +149,11 @@ pub struct DumpAreaHeader {
     /// including all headers
     pub written: u32,
 
-    /// Version of dump agent
-    pub agent_version: u8,
+    /// Dump contents (to be written by agent)
+    pub contents: u8,
 
-    /// Version of dumper (to be written by dumper)
-    pub dumper_version: u8,
+    /// Dumper (to be written by dumper)
+    pub dumper: u8,
 
     /// Number of segment headers that follow this header
     pub nsegments: u16,
@@ -46,20 +162,75 @@ pub struct DumpAreaHeader {
     pub next: u32,
 }
 
+impl DumpAreaHeader {
+    fn read_and_check<T>(
+        address: u32,
+        mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
+    ) -> Result<Self, DumpError<T>> {
+        const HEADER_SIZE: usize = core::mem::size_of::<DumpAreaHeader>();
+
+        let mut hbuf = [0u8; HEADER_SIZE];
+
+        if let Err(e) = read(address, &mut hbuf[..], true) {
+            return Err(DumpError::BadHeaderRead(address, e));
+        }
+
+        let header = match DumpAreaHeader::read_from(&hbuf[..]) {
+            Some(header) => header,
+            None => {
+                return Err(DumpError::BadDumpHeader(address));
+            }
+        };
+
+        if header.magic != DUMP_MAGIC {
+            return Err(DumpError::BadMagic(address));
+        }
+
+        if header.address != address {
+            return Err(DumpError::CorruptHeaderAddress(address));
+        }
+
+        Ok(header)
+    }
+}
+
 #[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
-#[repr(C, packed)]
+#[repr(C)]
 pub struct DumpSegmentHeader {
     pub address: u32,
     pub length: u32,
 }
 
+pub enum DumpSegment {
+    Data(DumpSegmentData),
+    Register(DumpRegister),
+    Task(DumpTask),
+    Unknown([u8; 2]),
+}
+
+impl DumpSegment {
+    pub fn from(dump: &[u8]) -> Option<Self> {
+        if dump.len() < 2 {
+            None
+        } else if dump[..2] == DUMP_REGISTER_MAGIC {
+            DumpRegister::read_from_prefix(dump).map(DumpSegment::Register)
+        } else if dump[..2] == DUMP_TASK_MAGIC {
+            DumpTask::read_from_prefix(dump).map(DumpSegment::Task)
+        } else if (dump[0] as usize) & DUMP_SEGMENT_MASK != 0 {
+            Some(DumpSegment::Unknown([dump[0], dump[1]]))
+        } else {
+            DumpSegmentData::read_from_prefix(dump).map(DumpSegment::Data)
+        }
+    }
+}
+
 //
-// A segment of actual data, as stored by the dumper into the dump area(s).  Note
-// that we very much depend on endianness here:  any unused space at the end of
-// of a single area will be filled with DUMP_SEGMENT_PAD.
+// A segment of actual data, as stored by the dumper into the dump area(s).
+// Note that we very much depend on endianness here:  any unused space at the
+// end of of a single area will be filled with DUMP_SEGMENT_PAD.
 //
 #[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
-#[repr(C, packed)]
+#[repr(C)]
 #[cfg(target_endian = "little")]
 pub struct DumpSegmentData {
     pub address: u32,
@@ -68,7 +239,7 @@ pub struct DumpSegmentData {
 }
 
 #[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
-#[repr(C, packed)]
+#[repr(C)]
 pub struct DumpRegister {
     /// Register magic -- must be DUMP_REGISTER_MAGIC
     pub magic: [u8; 2],
@@ -92,7 +263,29 @@ impl DumpRegister {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, FromBytes, AsBytes, PartialEq, Eq)]
+#[repr(C)]
+pub struct DumpTask {
+    /// task magic -- must be DUMP_TASK_MAGIC
+    pub magic: [u8; 2],
+
+    /// ID of task that is dumped here (task IDs are maximum 15 bits)
+    pub id: u16,
+
+    /// Padding to allow for time
+    pub pad: u32,
+
+    /// Time that task was dumped
+    pub time: u64,
+}
+
+impl DumpTask {
+    pub fn new(id: u16, time: u64) -> Self {
+        DumpTask { magic: DUMP_TASK_MAGIC, id, pad: 0, time }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DumpError<T> {
     BufferTooSmall,
     BufferTooSmallForCompression,
@@ -116,6 +309,17 @@ pub enum DumpError<T> {
     BadRegisterRead(T),
     BadRegisterWrite(u32, T),
     OutOfRegisterSpace,
+    InvalidIndex,
+    BadAgentWrite(u32, T),
+    IncorrectlyClaimedArea(u32),
+    InvalidAgent,
+    OutOfSpaceForSegments,
+    BadSegmentWrite(u32, T),
+    OutOfTaskSpace,
+    BadTaskWrite(u32, T),
+    UnalignedSegmentAddress(u32),
+    IncorrectlyClaimedTaskDump,
+    IncorrectlyClaimedSystemDump,
 }
 
 //
@@ -123,6 +327,267 @@ pub enum DumpError<T> {
 // to 128 bytes or so.
 //
 pub type DumpLzss = lzss::Lzss<6, 4, 0x20, { 1 << 6 }, { 2 << 6 }>;
+
+#[allow(clippy::result_unit_err)]
+pub unsafe fn from_mem(addr: u32, buf: &mut [u8]) -> Result<(), ()> {
+    let src = core::slice::from_raw_parts(addr as *const u8, buf.len());
+    buf.copy_from_slice(src);
+    Ok(())
+}
+
+#[allow(clippy::result_unit_err)]
+pub unsafe fn to_mem(addr: u32, buf: &[u8]) -> Result<(), ()> {
+    let dest = core::slice::from_raw_parts_mut(addr as *mut u8, buf.len());
+    dest.copy_from_slice(buf);
+    Ok(())
+}
+
+///
+/// Initialize the dump areas based on the specified list.
+///
+pub fn initialize_dump_areas(
+    areas: &[DumpArea],
+    chunksize: Option<usize>,
+) -> Option<u32> {
+    let mut next = 0;
+
+    for area in areas.iter().rev() {
+        let chunksize = match chunksize {
+            Some(chunksize) => chunksize,
+            None => area.length as usize,
+        };
+
+        let length = area.length.min(chunksize as u32);
+
+        for offset in (0..area.length).step_by(chunksize).rev() {
+            let address = area.address + offset;
+
+            unsafe {
+                let header = address as *mut DumpAreaHeader;
+
+                //
+                // We initialize our dump headers with deliberately bad magic
+                // to prevent any dumps until we have everything initialized
+                //
+                (*header) = DumpAreaHeader {
+                    magic: DUMP_UNINITIALIZED,
+                    address,
+                    nsegments: 0,
+                    written: core::mem::size_of::<DumpAreaHeader>() as u32,
+                    length,
+                    contents: area.contents.into(),
+                    dumper: DUMPER_NONE,
+                    next,
+                }
+            }
+
+            next = address;
+        }
+    }
+
+    if !areas.is_empty() {
+        let mut address = areas[0].address;
+
+        while address != 0 {
+            unsafe {
+                let header = address as *mut DumpAreaHeader;
+                (*header).magic = DUMP_MAGIC;
+                address = (*header).next;
+            }
+        }
+
+        Some(areas[0].address)
+    } else {
+        None
+    }
+}
+
+///
+/// This should only be called in the context of the dump agent proxy.  Note
+/// that this is searching a linked list, so it's O(N); if used to retrieve
+/// every area, it will be quadratic (though N itself is generally smallish --
+/// e.g., ~50).
+///
+pub fn get_dump_area<T>(
+    base: u32,
+    index: u8,
+    mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
+) -> Result<DumpArea, DumpError<T>> {
+    let mut address = base;
+    let mut i = 0;
+
+    loop {
+        let header = DumpAreaHeader::read_and_check(address, &mut read)?;
+
+        if index == i {
+            return Ok(DumpArea {
+                address,
+                length: header.length,
+                contents: DumpContents::from(header.contents),
+            });
+        }
+
+        if header.next == 0 {
+            return Err(DumpError::InvalidIndex);
+        }
+
+        address = header.next;
+        i += 1;
+    }
+}
+
+fn claim_all_dump_areas<T>(
+    base: u32,
+    mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
+    mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
+) -> Result<Option<DumpArea>, DumpError<T>> {
+    let mut address = base;
+    let mut header = DumpAreaHeader::read_and_check(address, &mut read)?;
+    let contents: u8 = DumpContents::WholeSystem.into();
+
+    if header.contents != DUMP_CONTENTS_AVAILABLE {
+        return Ok(None);
+    }
+
+    //
+    // If we're here, we know that the first dump area is available -- and
+    // therefore they are.  Claim 'em all...
+    //
+    let contents: u8 = contents.into();
+
+    let rval = Some(DumpArea {
+        address,
+        length: header.length,
+        contents: contents.into(),
+    });
+
+    loop {
+        header.contents = contents;
+
+        if let Err(e) = write(address, header.as_bytes()) {
+            return Err(DumpError::BadAgentWrite(address, e));
+        }
+
+        if header.next == 0 {
+            break;
+        }
+
+        address = header.next;
+        header = DumpAreaHeader::read_and_check(address, &mut read)?;
+
+        if header.contents != DUMP_CONTENTS_AVAILABLE {
+            //
+            // This should be impossible:  in means that there was
+            // an unclaimed area followed by a claimed one.
+            //
+            return Err(DumpError::IncorrectlyClaimedArea(address));
+        }
+    }
+
+    Ok(rval)
+}
+
+///
+/// Called by the dump agent proxy to claim a dump area on behalf of a
+/// specified agent.  This will look for an area that does not have its
+/// contents set to DUMP_CONTENTS_AVAILABLE.  If `claimall` is set, all areas
+/// will be claimed (or none).  Areas are always claimed from the first area
+/// on.
+///
+pub fn claim_dump_area<T>(
+    base: u32,
+    contents: DumpContents,
+    mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
+    mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
+) -> Result<Option<DumpArea>, DumpError<T>> {
+    let mut address = base;
+
+    if contents == DumpContents::WholeSystem {
+        return claim_all_dump_areas(base, &mut read, &mut write);
+    }
+
+    if contents != DumpContents::SingleTask {
+        return Err(DumpError::InvalidAgent);
+    }
+
+    let contents: u8 = contents.into();
+
+    Ok(loop {
+        let mut header = DumpAreaHeader::read_and_check(address, &mut read)?;
+
+        if header.contents == DUMP_CONTENTS_AVAILABLE {
+            //
+            // We have a winner!  Set the contents, and write it back.
+            //
+            header.contents = contents;
+
+            if let Err(e) = write(address, header.as_bytes()) {
+                return Err(DumpError::BadAgentWrite(address, e));
+            }
+
+            break Some(DumpArea {
+                address,
+                length: header.length,
+                contents: contents.into(),
+            });
+        }
+
+        if header.next == 0 {
+            break None;
+        }
+
+        address = header.next;
+    })
+}
+
+///
+/// Add a segment header starting at `addr` bytes and running for `length`
+/// bytes to the dump area indicated by `base`.  The caller must have claimed
+/// the dump area.
+///
+pub fn add_dump_segment_header<T>(
+    base: u32,
+    addr: u32,
+    length: u32,
+    mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
+    mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
+) -> Result<(), DumpError<T>> {
+    let mut header = DumpAreaHeader::read_and_check(base, &mut read)?;
+    let nsegments = header.nsegments;
+
+    let offset = core::mem::size_of::<DumpAreaHeader>()
+        + (nsegments as usize) * core::mem::size_of::<DumpSegmentHeader>();
+    let need = (offset + core::mem::size_of::<DumpSegmentHeader>()) as u32;
+
+    if need > header.length {
+        return Err(DumpError::OutOfSpaceForSegments);
+    }
+
+    let saddr = base + offset as u32;
+
+    //
+    // We enforce that addresses are at least word aligned to be able to
+    // use the lower bits to denote a special segment.
+    //
+    if addr & DUMP_SEGMENT_MASK as u32 != 0 {
+        return Err(DumpError::UnalignedSegmentAddress(addr));
+    }
+
+    let segment = DumpSegmentHeader { address: addr, length };
+
+    header.nsegments = nsegments + 1;
+    header.written = need;
+
+    if let Err(e) = write(saddr, segment.as_bytes()) {
+        return Err(DumpError::BadSegmentWrite(saddr, e));
+    }
+
+    if let Err(e) = write(base, header.as_bytes()) {
+        return Err(DumpError::BadHeaderWrite(base, e));
+    }
+
+    Ok(())
+}
 
 ///
 /// This function performs the actual dumping.  It takes three closures:
@@ -139,8 +604,9 @@ pub type DumpLzss = lzss::Lzss<6, 4, 0x20, { 1 << 6 }, { 2 << 6 }>;
 ///
 pub fn dump<T, const N: usize, const V: u8>(
     base: u32,
+    task: Option<DumpTask>,
     mut register_read: impl FnMut() -> Result<Option<RegisterRead>, T>,
-    mut read: impl FnMut(u32, &mut [u8]) -> Result<(), T>,
+    mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
     mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
 ) -> Result<(), DumpError<T>> {
     use core::mem::size_of;
@@ -176,29 +642,37 @@ pub fn dump<T, const N: usize, const V: u8>(
     }
 
     let mut buf = [0u8; N];
-    let mut hbuf = [0u8; HEADER_SIZE];
+    let mut header = DumpAreaHeader::read_and_check(base, &mut read)?;
 
-    if let Err(e) = read(base, &mut hbuf[..]) {
-        return Err(DumpError::BadHeaderRead(base, e));
-    }
-
-    let mut header = match DumpAreaHeader::read_from(&hbuf[..]) {
-        Some(header) => header,
-        None => {
-            return Err(DumpError::BadDumpHeader(base));
-        }
-    };
-
-    if header.magic != DUMP_MAGIC {
-        return Err(DumpError::BadMagic(base));
-    }
-
-    if header.address != base {
-        return Err(DumpError::CorruptHeaderAddress(base));
-    }
-
-    if header.dumper_version != DUMPER_NONE {
+    if header.dumper != DUMPER_NONE {
         return Err(DumpError::DumpAlreadyExists);
+    }
+
+    let contents = header.contents;
+
+    //
+    // If we are dumping a task, create that metadata now.
+    //
+    if let Some(ref task) = task {
+        let size = size_of::<DumpTask>() as u32;
+
+        if contents != DUMP_CONTENTS_SINGLETASK {
+            return Err(DumpError::IncorrectlyClaimedTaskDump);
+        }
+
+        if header.written + size >= header.length {
+            return Err(DumpError::OutOfTaskSpace);
+        }
+
+        let taddr = header.address + header.written;
+
+        if let Err(e) = write(taddr, task.as_bytes()) {
+            return Err(DumpError::BadTaskWrite(taddr, e));
+        }
+
+        header.written += size;
+    } else if contents == DUMP_CONTENTS_SINGLETASK {
+        return Err(DumpError::IncorrectlyClaimedSystemDump);
     }
 
     //
@@ -235,7 +709,7 @@ pub fn dump<T, const N: usize, const V: u8>(
     for seg in 0..nsegments {
         let saddr = base + (HEADER_SIZE + seg * seg_header_size) as u32;
 
-        if let Err(e) = read(saddr, &mut buf[..seg_header_size]) {
+        if let Err(e) = read(saddr, &mut buf[..seg_header_size], true) {
             return Err(DumpError::BadSegmentHeaderRead(saddr, e));
         }
 
@@ -261,7 +735,7 @@ pub fn dump<T, const N: usize, const V: u8>(
             let offs = buf.len() - nbytes;
             let len = buf.len();
 
-            if let Err(e) = read(addr, &mut buf[offs..len]) {
+            if let Err(e) = read(addr, &mut buf[offs..len], false) {
                 return Err(DumpError::BadDataRead(addr, e));
             }
 
@@ -299,7 +773,8 @@ pub fn dump<T, const N: usize, const V: u8>(
                 // We are out of room in this area; we need to write our header.
                 //
                 let next = header.next;
-                header.dumper_version = V;
+                header.dumper = V;
+                header.contents = contents;
 
                 if let Err(e) = write(haddr, header.as_bytes()) {
                     return Err(DumpError::BadHeaderWrite(haddr, e));
@@ -311,24 +786,7 @@ pub fn dump<T, const N: usize, const V: u8>(
                     return Err(DumpError::OutOfSpace(addr));
                 }
 
-                if let Err(e) = read(haddr, &mut hbuf[..]) {
-                    return Err(DumpError::BadHeaderRead(haddr, e));
-                }
-
-                header = match DumpAreaHeader::read_from(&hbuf[..]) {
-                    Some(header) => header,
-                    None => {
-                        return Err(DumpError::BadDumpHeader(haddr));
-                    }
-                };
-
-                if header.magic != DUMP_MAGIC {
-                    return Err(DumpError::BadMagic(haddr));
-                }
-
-                if header.address != haddr {
-                    return Err(DumpError::CorruptHeaderAddress(haddr));
-                }
+                header = DumpAreaHeader::read_and_check(haddr, &mut read)?;
 
                 //
                 // We don't expect any segment descriptions on any but our
@@ -366,7 +824,8 @@ pub fn dump<T, const N: usize, const V: u8>(
     //
     // We're done!  We need to write out our last header.
     //
-    header.dumper_version = V;
+    header.dumper = V;
+    header.contents = contents;
 
     if let Err(e) = write(haddr, header.as_bytes()) {
         return Err(DumpError::BadFinalHeaderWrite(haddr, e));
