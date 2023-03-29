@@ -436,6 +436,57 @@ pub fn get_dump_area<T>(
     }
 }
 
+fn claim_all_dump_areas<T>(
+    base: u32,
+    mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
+    mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
+) -> Result<Option<DumpArea>, DumpError<T>> {
+    let mut address = base;
+    let mut header = DumpAreaHeader::read_and_check(address, &mut read)?;
+    let contents: u8 = DumpContents::WholeSystem.into();
+
+    if header.contents != DUMP_CONTENTS_AVAILABLE {
+        return Ok(None);
+    }
+
+    //
+    // If we're here, we know that the first dump area is available -- and
+    // therefore they are.  Claim 'em all...
+    //
+    let contents: u8 = contents.into();
+
+    let rval = Some(DumpArea {
+        address,
+        length: header.length,
+        contents: contents.into(),
+    });
+
+    loop {
+        header.contents = contents;
+
+        if let Err(e) = write(address, header.as_bytes()) {
+            return Err(DumpError::BadAgentWrite(address, e));
+        }
+
+        if header.next == 0 {
+            break;
+        }
+
+        address = header.next;
+        header = DumpAreaHeader::read_and_check(address, &mut read)?;
+
+        if header.contents != DUMP_CONTENTS_AVAILABLE {
+            //
+            // This should be impossible:  in means that there was
+            // an unclaimed area followed by a claimed one.
+            //
+            return Err(DumpError::IncorrectlyClaimedArea(address));
+        }
+    }
+
+    Ok(rval)
+}
+
 ///
 /// Called by the dump agent proxy to claim a dump area on behalf of a
 /// specified agent.  This will look for an area that does not have its
@@ -450,19 +501,18 @@ pub fn claim_dump_area<T>(
     mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
 ) -> Result<Option<DumpArea>, DumpError<T>> {
     let mut address = base;
-    let mut rval = None;
 
-    let claimall = match contents {
-        DumpContents::SingleTask => false,
-        DumpContents::WholeSystem => true,
-        _ => {
-            return Err(DumpError::InvalidAgent);
-        }
-    };
+    if contents == DumpContents::WholeSystem {
+        return claim_all_dump_areas(base, &mut read, &mut write);
+    }
+
+    if contents != DumpContents::SingleTask {
+        return Err(DumpError::InvalidAgent);
+    }
 
     let contents: u8 = contents.into();
 
-    loop {
+    Ok(loop {
         let mut header = DumpAreaHeader::read_and_check(address, &mut read)?;
 
         if header.contents == DUMP_CONTENTS_AVAILABLE {
@@ -475,41 +525,19 @@ pub fn claim_dump_area<T>(
                 return Err(DumpError::BadAgentWrite(address, e));
             }
 
-            //
-            // If we want to claim all areas, keep going -- but keep track
-            // of this first area as it will be the one we return.
-            //
-            if !claimall || address == base {
-                rval = Some(DumpArea {
-                    address,
-                    length: header.length,
-                    contents: header.contents.into(),
-                })
-            }
-
-            if !claimall {
-                break;
-            }
-        } else if claimall {
-            if address == base {
-                break;
-            } else {
-                //
-                // This should be impossible:  in means that there was
-                // an unclaimed area followed by a claimed one.
-                //
-                return Err(DumpError::IncorrectlyClaimedArea(address));
-            }
+            break Some(DumpArea {
+                address,
+                length: header.length,
+                contents: contents.into(),
+            });
         }
 
         if header.next == 0 {
-            break;
+            break None;
         }
 
         address = header.next;
-    }
-
-    Ok(rval)
+    })
 }
 
 ///
