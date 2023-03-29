@@ -162,6 +162,38 @@ pub struct DumpAreaHeader {
     pub next: u32,
 }
 
+impl DumpAreaHeader {
+    fn read_and_check<T>(
+        address: u32,
+        mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
+    ) -> Result<Self, DumpError<T>> {
+        const HEADER_SIZE: usize = core::mem::size_of::<DumpAreaHeader>();
+
+        let mut hbuf = [0u8; HEADER_SIZE];
+
+        if let Err(e) = read(address, &mut hbuf[..], true) {
+            return Err(DumpError::BadHeaderRead(address, e));
+        }
+
+        let header = match DumpAreaHeader::read_from(&hbuf[..]) {
+            Some(header) => header,
+            None => {
+                return Err(DumpError::BadDumpHeader(address));
+            }
+        };
+
+        if header.magic != DUMP_MAGIC {
+            return Err(DumpError::BadMagic(address));
+        }
+
+        if header.address != address {
+            return Err(DumpError::CorruptHeaderAddress(address));
+        }
+
+        Ok(header)
+    }
+}
+
 #[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct DumpSegmentHeader {
@@ -297,19 +329,15 @@ pub enum DumpError<T> {
 pub type DumpLzss = lzss::Lzss<6, 4, 0x20, { 1 << 6 }, { 2 << 6 }>;
 
 #[allow(clippy::result_unit_err)]
-pub fn from_mem(addr: u32, buf: &mut [u8], _meta: bool) -> Result<(), ()> {
-    let src =
-        unsafe { core::slice::from_raw_parts(addr as *const u8, buf.len()) };
-
+pub unsafe fn from_mem(addr: u32, buf: &mut [u8]) -> Result<(), ()> {
+    let src = core::slice::from_raw_parts(addr as *const u8, buf.len());
     buf.copy_from_slice(src);
     Ok(())
 }
 
 #[allow(clippy::result_unit_err)]
-pub fn to_mem(addr: u32, buf: &[u8]) -> Result<(), ()> {
-    let dest =
-        unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, buf.len()) };
-
+pub unsafe fn to_mem(addr: u32, buf: &[u8]) -> Result<(), ()> {
+    let dest = core::slice::from_raw_parts_mut(addr as *mut u8, buf.len());
     dest.copy_from_slice(buf);
     Ok(())
 }
@@ -387,29 +415,9 @@ pub fn get_dump_area<T>(
 ) -> Result<DumpArea, DumpError<T>> {
     let mut address = base;
     let mut i = 0;
-    const HEADER_SIZE: usize = core::mem::size_of::<DumpAreaHeader>();
 
     loop {
-        let mut hbuf = [0u8; HEADER_SIZE];
-
-        if let Err(e) = read(address, &mut hbuf[..], true) {
-            return Err(DumpError::BadHeaderRead(address, e));
-        }
-
-        let header = match DumpAreaHeader::read_from(&hbuf[..]) {
-            Some(header) => header,
-            None => {
-                return Err(DumpError::BadDumpHeader(address));
-            }
-        };
-
-        if header.magic != DUMP_MAGIC {
-            return Err(DumpError::BadMagic(address));
-        }
-
-        if header.address != address {
-            return Err(DumpError::CorruptHeaderAddress(address));
-        }
+        let header = DumpAreaHeader::read_and_check(address, &mut read)?;
 
         if index == i {
             return Ok(DumpArea {
@@ -454,29 +462,8 @@ pub fn claim_dump_area<T>(
 
     let contents: u8 = contents.into();
 
-    const HEADER_SIZE: usize = core::mem::size_of::<DumpAreaHeader>();
-
     loop {
-        let mut hbuf = [0u8; HEADER_SIZE];
-
-        if let Err(e) = read(address, &mut hbuf[..], true) {
-            return Err(DumpError::BadHeaderRead(address, e));
-        }
-
-        let mut header = match DumpAreaHeader::read_from(&hbuf[..]) {
-            Some(header) => header,
-            None => {
-                return Err(DumpError::BadDumpHeader(address));
-            }
-        };
-
-        if header.magic != DUMP_MAGIC {
-            return Err(DumpError::BadMagic(address));
-        }
-
-        if header.address != address {
-            return Err(DumpError::CorruptHeaderAddress(address));
-        }
+        let mut header = DumpAreaHeader::read_and_check(address, &mut read)?;
 
         if header.contents == DUMP_CONTENTS_AVAILABLE {
             //
@@ -537,29 +524,7 @@ pub fn add_dump_segment_header<T>(
     mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
     mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
 ) -> Result<(), DumpError<T>> {
-    const HEADER_SIZE: usize = core::mem::size_of::<DumpAreaHeader>();
-
-    let mut hbuf = [0u8; HEADER_SIZE];
-
-    if let Err(e) = read(base, &mut hbuf[..], true) {
-        return Err(DumpError::BadHeaderRead(base, e));
-    }
-
-    let mut header = match DumpAreaHeader::read_from(&hbuf[..]) {
-        Some(header) => header,
-        None => {
-            return Err(DumpError::BadDumpHeader(base));
-        }
-    };
-
-    if header.magic != DUMP_MAGIC {
-        return Err(DumpError::BadMagic(base));
-    }
-
-    if header.address != base {
-        return Err(DumpError::CorruptHeaderAddress(base));
-    }
-
+    let mut header = DumpAreaHeader::read_and_check(base, &mut read)?;
     let nsegments = header.nsegments;
 
     let offset = core::mem::size_of::<DumpAreaHeader>()
@@ -580,10 +545,7 @@ pub fn add_dump_segment_header<T>(
         return Err(DumpError::UnalignedSegmentAddress(addr));
     }
 
-    let segment = DumpSegmentHeader {
-        address: addr,
-        length
-    };
+    let segment = DumpSegmentHeader { address: addr, length };
 
     header.nsegments = nsegments + 1;
     header.written = need;
@@ -652,26 +614,7 @@ pub fn dump<T, const N: usize, const V: u8>(
     }
 
     let mut buf = [0u8; N];
-    let mut hbuf = [0u8; HEADER_SIZE];
-
-    if let Err(e) = read(base, &mut hbuf[..], true) {
-        return Err(DumpError::BadHeaderRead(base, e));
-    }
-
-    let mut header = match DumpAreaHeader::read_from(&hbuf[..]) {
-        Some(header) => header,
-        None => {
-            return Err(DumpError::BadDumpHeader(base));
-        }
-    };
-
-    if header.magic != DUMP_MAGIC {
-        return Err(DumpError::BadMagic(base));
-    }
-
-    if header.address != base {
-        return Err(DumpError::CorruptHeaderAddress(base));
-    }
+    let mut header = DumpAreaHeader::read_and_check(base, &mut read)?;
 
     if header.dumper != DUMPER_NONE {
         return Err(DumpError::DumpAlreadyExists);
@@ -815,24 +758,7 @@ pub fn dump<T, const N: usize, const V: u8>(
                     return Err(DumpError::OutOfSpace(addr));
                 }
 
-                if let Err(e) = read(haddr, &mut hbuf[..], true) {
-                    return Err(DumpError::BadHeaderRead(haddr, e));
-                }
-
-                header = match DumpAreaHeader::read_from(&hbuf[..]) {
-                    Some(header) => header,
-                    None => {
-                        return Err(DumpError::BadDumpHeader(haddr));
-                    }
-                };
-
-                if header.magic != DUMP_MAGIC {
-                    return Err(DumpError::BadMagic(haddr));
-                }
-
-                if header.address != haddr {
-                    return Err(DumpError::CorruptHeaderAddress(haddr));
-                }
+                header = DumpAreaHeader::read_and_check(haddr, &mut read)?;
 
                 //
                 // We don't expect any segment descriptions on any but our
