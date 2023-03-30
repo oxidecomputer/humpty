@@ -81,8 +81,8 @@ pub const DUMPER_EXTERNAL: u8 = 1;
 pub const DUMPER_JEFE: u8 = 2;
 
 pub const DUMP_CONTENTS_AVAILABLE: u8 = 0;
-pub const DUMP_CONTENTS_SINGLETASK: u8 = 1;
-pub const DUMP_CONTENTS_WHOLESYSTEM: u8 = 2;
+pub const DUMP_CONTENTS_WHOLESYSTEM: u8 = 1;
+pub const DUMP_CONTENTS_SINGLETASK: u8 = 2;
 pub const DUMP_CONTENTS_INVALID: u8 = 0xff;
 
 #[derive(
