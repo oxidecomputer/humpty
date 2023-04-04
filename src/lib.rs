@@ -80,9 +80,17 @@ pub const DUMPER_EMULATED: u8 = 0xfe;
 pub const DUMPER_EXTERNAL: u8 = 1;
 pub const DUMPER_JEFE: u8 = 2;
 
+//
+// Constants for dump contents.  Other than [`DUMP_CONTENTS_AVAILABLE`] being
+// denoted with zero, the specific values should not be assumed to have
+// meaning across domains.  That is, these contents constants can be used to
+// assert invariants *within* a single domain, but should *not* be used to
+// assert invariants across domains, as it is conceivable that different
+// domains have different values for them.
+//
 pub const DUMP_CONTENTS_AVAILABLE: u8 = 0;
-pub const DUMP_CONTENTS_WHOLESYSTEM: u8 = 1;
-pub const DUMP_CONTENTS_SINGLETASK: u8 = 2;
+pub const DUMP_CONTENTS_SINGLETASK: u8 = 1;
+pub const DUMP_CONTENTS_WHOLESYSTEM: u8 = 2;
 pub const DUMP_CONTENTS_INVALID: u8 = 0xff;
 
 #[derive(
@@ -319,7 +327,6 @@ pub enum DumpError<T> {
     BadTaskWrite(u32, T),
     UnalignedSegmentAddress(u32),
     IncorrectlyClaimedTaskDump,
-    IncorrectlyClaimedSystemDump,
 }
 
 //
@@ -328,6 +335,19 @@ pub enum DumpError<T> {
 //
 pub type DumpLzss = lzss::Lzss<6, 4, 0x20, { 1 << 6 }, { 2 << 6 }>;
 
+///
+/// A convenience routine to offer as the `read` parameter to routines that
+/// operate on a dump area when that dump area is backed by memory (i.e.,
+/// within the same domain).  This should *only* be used as a parameter to
+/// these routines, and is marked unsafe to prevent its errant use elsewhere.
+///
+/// # Safety
+///
+/// Should only be used as a parameter to Humpty routines that take a
+/// closure to read from a dump area, and only then when the dump area is
+/// backed by a memory that can be operated upon as a memory (i.e., with
+/// the same allowances with respect to address alignment).
+///
 #[allow(clippy::result_unit_err)]
 pub unsafe fn from_mem(addr: u32, buf: &mut [u8]) -> Result<(), ()> {
     let src = core::slice::from_raw_parts(addr as *const u8, buf.len());
@@ -335,6 +355,20 @@ pub unsafe fn from_mem(addr: u32, buf: &mut [u8]) -> Result<(), ()> {
     Ok(())
 }
 
+///
+/// A convenience routine to offer as the `write` parameter to routines that
+/// operate on a dump area when that dump area is backed by memory (i.e.,
+/// within the same domain).  As with [`from_mem`], this should *only* be used
+/// as a parameter to these routines, and is marked unsafe to prevent its
+/// errant use elsewhere.
+///
+/// # Safety
+///
+/// Should only be used as a parameter to Humpty routines that take a
+/// closure to write to a dump area, and only then when the dump area is
+/// backed by a memory that can be operated upon as a memory (i.e., with
+/// the same allowances with respect to address alignment).
+///
 #[allow(clippy::result_unit_err)]
 pub unsafe fn to_mem(addr: u32, buf: &[u8]) -> Result<(), ()> {
     let dest = core::slice::from_raw_parts_mut(addr as *mut u8, buf.len());
@@ -453,8 +487,6 @@ fn claim_all_dump_areas<T>(
     // If we're here, we know that the first dump area is available -- and
     // therefore they are.  Claim 'em all...
     //
-    let contents: u8 = contents.into();
-
     let rval = Some(DumpArea {
         address,
         length: header.length,
@@ -490,9 +522,9 @@ fn claim_all_dump_areas<T>(
 ///
 /// Called by the dump agent proxy to claim a dump area on behalf of a
 /// specified agent.  This will look for an area that does not have its
-/// contents set to DUMP_CONTENTS_AVAILABLE.  If `claimall` is set, all areas
-/// will be claimed (or none).  Areas are always claimed from the first area
-/// on.
+/// contents set to [`DUMP_CONTENTS_AVAILABLE`].  If `claimall` is set, all
+/// areas will be claimed (or none).  Areas are always claimed from the first
+/// area on.
 ///
 pub fn claim_dump_area<T>(
     base: u32,
@@ -592,14 +624,14 @@ pub fn add_dump_segment_header<T>(
 ///
 /// This function performs the actual dumping.  It takes three closures:
 ///
-/// - [`register_read`] reads a register value from the target to be made
+/// - `register_read` reads a register value from the target to be made
 ///   present in the dump (or [`None`] to denote that there are no more
 ///   registers to read)
 ///
-/// - [`read`] performs a read from the target from the specified address
+/// - `read` performs a read from the target from the specified address
 ///   into the provided buffer
 ///
-/// - [`write`] performs a write into the target at the specified address
+/// - `write` performs a write into the target at the specified address
 ///   from the provided buffer
 ///
 pub fn dump<T, const N: usize, const V: u8>(
@@ -656,6 +688,10 @@ pub fn dump<T, const N: usize, const V: u8>(
     if let Some(ref task) = task {
         let size = size_of::<DumpTask>() as u32;
 
+        //
+        // It is safe to check the contents here:  if we are dumping a single
+        // task, we know that we are within the same domain of the claimant.
+        //
         if contents != DUMP_CONTENTS_SINGLETASK {
             return Err(DumpError::IncorrectlyClaimedTaskDump);
         }
@@ -671,8 +707,6 @@ pub fn dump<T, const N: usize, const V: u8>(
         }
 
         header.written += size;
-    } else if contents == DUMP_CONTENTS_SINGLETASK {
-        return Err(DumpError::IncorrectlyClaimedSystemDump);
     }
 
     //
