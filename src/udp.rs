@@ -20,7 +20,7 @@ pub const DUMP_READ_SIZE: usize = 256;
 )]
 pub struct Header {
     /// The protocol version.
-    version: u8,
+    pub version: u8,
 
     /// An arbitrary message ID, shared between a request and its response.
     pub message_id: u64,
