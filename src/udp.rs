@@ -12,6 +12,7 @@ use crate::DumpArea;
 use hubpack::SerializedSize;
 use serde::{Deserialize, Serialize};
 
+pub const VERSION: u8 = 1;
 pub const DUMP_READ_SIZE: usize = 256;
 
 #[derive(
