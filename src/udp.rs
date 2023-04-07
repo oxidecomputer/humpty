@@ -72,7 +72,9 @@ pub enum Response {
 ///
 /// This is mostly to `DumpAgentError` in Hubris, but lives in a separate
 /// crate so it can be versioned independently.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, SerializedSize)]
+#[derive(
+    Copy, Clone, Debug, Deserialize, Eq, PartialEq, Serialize, SerializedSize,
+)]
 pub enum Error {
     DumpAgentUnsupported,
     InvalidArea,
