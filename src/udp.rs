@@ -66,8 +66,8 @@ pub struct Header {
     Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, SerializedSize,
 )]
 pub enum Request {
-    /// Fetch the 256 bytes from the dump at the specified offset from the
-    /// specified area.
+    /// Fetch the `DUMP_READ_SIZE` bytes from the dump at the specified offset
+    /// from the specified area.
     ReadDump { index: u8, offset: u32 },
 
     /// Returns information associated with the specified dump area
@@ -233,6 +233,18 @@ mod encoding_tests {
                 avoid reordering or removing variants."
             );
         }
+
+        let r = Request::ReadDump { index: 123, offset: 456 };
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[..size], [0, 123, 200, 1, 0, 0]);
+
+        let r = Request::GetDumpArea { index: 123 };
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[..size], [1, 123]);
+
+        let r = Request::AddDumpSegment { address: 123, length: 321 };
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[..size], [3, 123, 0, 0, 0, 65, 1, 0, 0]);
     }
 
     #[test]
@@ -262,6 +274,23 @@ mod encoding_tests {
                 to avoid reordering or removing variants."
             );
         }
+
+        let mut array = [0u8; 256];
+        array[0] = 123;
+        array[5] = 127;
+        array[1] = 1;
+        let r = Response::ReadDump(array);
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(size, 257);
+        assert_eq!(buf[1..], array);
+
+        let r = Response::GetDumpArea(DumpArea {
+            address: 123,
+            contents: DumpContents::Unknown,
+            length: 3456,
+        });
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[..size], [1, 123, 0, 0, 0, 128, 13, 0, 0, 3]);
     }
 
     #[test]
