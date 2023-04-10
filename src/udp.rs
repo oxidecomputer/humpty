@@ -76,6 +76,13 @@ pub enum Response {
     Copy, Clone, Debug, Deserialize, Eq, PartialEq, Serialize, SerializedSize,
 )]
 pub enum Error {
+    // New error type specific to network traffic
+    //
+    // This is deliberately put at the beginning so that new Hubris errors can
+    // be added without changing the encoding order.
+    DeserializeError,
+
+    // Error types from `DumpAgentError`
     DumpAgentUnsupported,
     InvalidArea,
     BadOffset,
@@ -91,6 +98,12 @@ pub enum Error {
     BadSegmentAdd,
     ServerRestarted,
 
-    // New error types specific to network traffic
-    DeserializeError,
+    BadDumpResponse,
+    DumpMessageFailed,
+    DumpFailedSetup,
+    DumpFailedRead,
+    DumpFailedWrite,
+    DumpFailedControl,
+    DumpFailedUnknown,
+    DumpFailedUnknownError,
 }
