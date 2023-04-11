@@ -89,8 +89,8 @@ pub enum Request {
 )]
 #[allow(clippy::large_enum_variant)]
 pub struct RequestMessage {
-    header: Header,
-    request: Request,
+    pub header: Header,
+    pub request: Request,
 }
 
 /// Responses from the target device to the host
@@ -116,8 +116,8 @@ pub enum Response {
 )]
 #[allow(clippy::large_enum_variant)]
 pub struct ResponseMessage {
-    header: Header,
-    response: Result<Response, Error>,
+    pub header: Header,
+    pub response: Result<Response, Error>,
 }
 
 /// Errors that can be reported by the dump agent
