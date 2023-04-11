@@ -83,6 +83,16 @@ pub enum Request {
     TakeDump,
 }
 
+/// Complete message sent from the host to the target device
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, SerializedSize,
+)]
+#[allow(clippy::large_enum_variant)]
+pub struct RequestMessage {
+    header: Header,
+    request: Request,
+}
+
 /// Responses from the target device to the host
 ///
 /// Most of these are simple acknowledgements, but some include data (either in
@@ -98,6 +108,16 @@ pub enum Response {
     InitializeDump,
     AddDumpSegment,
     TakeDump,
+}
+
+/// Complete reply sent from the host to the target device
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, SerializedSize,
+)]
+#[allow(clippy::large_enum_variant)]
+pub struct ResponseMessage {
+    header: Header,
+    response: Result<Response, Error>,
 }
 
 /// Errors that can be reported by the dump agent
@@ -144,7 +164,10 @@ pub enum Error {
 
 #[cfg(test)]
 mod encoding_tests {
-    use super::{Error, Request, Response, DUMP_READ_SIZE};
+    use super::{
+        Error, Header, Request, RequestMessage, Response, ResponseMessage,
+        DUMP_READ_SIZE,
+    };
     use crate::{DumpArea, DumpContents};
     use core::convert::TryFrom;
     use hubpack::SerializedSize;
@@ -245,6 +268,36 @@ mod encoding_tests {
         let r = Request::AddDumpSegment { address: 123, length: 321 };
         let size = hubpack::serialize(&mut buf, &r).unwrap();
         assert_eq!(buf[..size], [3, 123, 0, 0, 0, 65, 1, 0, 0]);
+    }
+
+    #[test]
+    fn test_requestmessage_encoding_unchanged() {
+        let mut buf = [0u8; RequestMessage::MAX_SIZE];
+        let r = RequestMessage {
+            header: Header { version: 1, message_id: 1234 },
+            request: Request::TakeDump,
+        };
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[..size], [1, 210, 4, 0, 0, 0, 0, 0, 0, 4]);
+    }
+
+    #[test]
+    fn test_responsemessage_encoding_unchanged() {
+        let mut buf = [0u8; ResponseMessage::MAX_SIZE];
+
+        let r = ResponseMessage {
+            header: Header { version: 1, message_id: 1235 },
+            response: Ok(Response::TakeDump),
+        };
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[..size], [1, 211, 4, 0, 0, 0, 0, 0, 0, 0, 4]);
+
+        let r = ResponseMessage {
+            header: Header { version: 1, message_id: 1235 },
+            response: Err(Error::BadOffset),
+        };
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[..size], [1, 211, 4, 0, 0, 0, 0, 0, 0, 1, 4]);
     }
 
     #[test]

@@ -134,7 +134,6 @@ impl From<DumpContents> for u8 {
             DumpContents::Available => DUMP_CONTENTS_AVAILABLE,
             DumpContents::SingleTask => DUMP_CONTENTS_SINGLETASK,
             DumpContents::WholeSystem => DUMP_CONTENTS_WHOLESYSTEM,
-            DumpContents::TaskRegion => DUMP_CONTENTS_TASKREGION,
             _ => DUMP_CONTENTS_INVALID,
         }
     }
