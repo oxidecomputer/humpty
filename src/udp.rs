@@ -8,7 +8,6 @@
 //! replies from the device are `(Header, Response)`, along with trailing data
 //! in the packet for the actual dump (if relevant).
 
-use crate::DumpArea;
 use hubpack::SerializedSize;
 use serde::{Deserialize, Serialize};
 
@@ -70,9 +69,6 @@ pub enum Request {
     /// from the specified area.
     ReadDump { index: u8, offset: u32 },
 
-    /// Returns information associated with the specified dump area
-    GetDumpArea { index: u8 },
-
     /// Initialize dump context, overwriting any taken dump
     InitializeDump,
 
@@ -104,7 +100,6 @@ pub struct RequestMessage {
 pub enum Response {
     #[serde(with = "serde_big_array::BigArray")]
     ReadDump([u8; DUMP_READ_SIZE]),
-    GetDumpArea(DumpArea),
     InitializeDump,
     AddDumpSegment,
     TakeDump,
@@ -168,7 +163,6 @@ mod encoding_tests {
         Error, Header, Request, RequestMessage, Response, ResponseMessage,
         DUMP_READ_SIZE,
     };
-    use crate::{DumpArea, DumpContents};
     use core::convert::TryFrom;
     use hubpack::SerializedSize;
 
@@ -240,9 +234,8 @@ mod encoding_tests {
     #[test]
     fn test_request_encoding_unchanged() {
         let mut buf = [0u8; Request::MAX_SIZE];
-        const TEST_DATA: [Request; 5] = [
+        const TEST_DATA: [Request; 4] = [
             Request::ReadDump { index: 0, offset: 0 },
-            Request::GetDumpArea { index: 0 },
             Request::InitializeDump,
             Request::AddDumpSegment { address: 0, length: 0 },
             Request::TakeDump,
@@ -265,13 +258,9 @@ mod encoding_tests {
         let size = hubpack::serialize(&mut buf, &r).unwrap();
         assert_eq!(buf[..size], [0, 123, 200, 1, 0, 0]);
 
-        let r = Request::GetDumpArea { index: 123 };
-        let size = hubpack::serialize(&mut buf, &r).unwrap();
-        assert_eq!(buf[..size], [1, 123]);
-
         let r = Request::AddDumpSegment { address: 123, length: 321 };
         let size = hubpack::serialize(&mut buf, &r).unwrap();
-        assert_eq!(buf[..size], [3, 123, 0, 0, 0, 65, 1, 0, 0]);
+        assert_eq!(buf[..size], [2, 123, 0, 0, 0, 65, 1, 0, 0]);
     }
 
     #[test]
@@ -282,7 +271,7 @@ mod encoding_tests {
             request: Request::TakeDump,
         };
         let size = hubpack::serialize(&mut buf, &r).unwrap();
-        assert_eq!(buf[..size], [1, 210, 4, 0, 0, 0, 0, 0, 0, 4]);
+        assert_eq!(buf[..size], [1, 210, 4, 0, 0, 0, 0, 0, 0, 3]);
     }
 
     #[test]
@@ -294,7 +283,7 @@ mod encoding_tests {
             response: Ok(Response::TakeDump),
         };
         let size = hubpack::serialize(&mut buf, &r).unwrap();
-        assert_eq!(buf[..size], [1, 211, 4, 0, 0, 0, 0, 0, 0, 0, 4]);
+        assert_eq!(buf[..size], [1, 211, 4, 0, 0, 0, 0, 0, 0, 0, 3]);
 
         let r = ResponseMessage {
             header: Header { version: 1, message_id: 1235 },
@@ -307,13 +296,8 @@ mod encoding_tests {
     #[test]
     fn test_response_encoding_unchanged() {
         let mut buf = [0u8; Response::MAX_SIZE];
-        const TEST_DATA: [Response; 5] = [
+        const TEST_DATA: [Response; 4] = [
             Response::ReadDump([0u8; DUMP_READ_SIZE]),
-            Response::GetDumpArea(DumpArea {
-                address: 0,
-                contents: DumpContents::Available,
-                length: 0,
-            }),
             Response::InitializeDump,
             Response::AddDumpSegment,
             Response::TakeDump,
@@ -340,37 +324,5 @@ mod encoding_tests {
         let size = hubpack::serialize(&mut buf, &r).unwrap();
         assert_eq!(size, 257);
         assert_eq!(buf[1..], array);
-
-        let r = Response::GetDumpArea(DumpArea {
-            address: 123,
-            contents: DumpContents::Unknown,
-            length: 3456,
-        });
-        let size = hubpack::serialize(&mut buf, &r).unwrap();
-        assert_eq!(buf[..size], [1, 123, 0, 0, 0, 128, 13, 0, 0, 3]);
-    }
-
-    #[test]
-    fn test_dumpcontents_encoding_unchanged() {
-        let mut buf = [0u8; DumpContents::MAX_SIZE];
-        const TEST_DATA: [DumpContents; 4] = [
-            DumpContents::Available,
-            DumpContents::SingleTask,
-            DumpContents::WholeSystem,
-            DumpContents::Unknown,
-        ];
-
-        for (variant_id, variant) in TEST_DATA.iter().enumerate() {
-            buf[0] = u8::try_from(variant_id).unwrap();
-            let (decoded, _rest) =
-                hubpack::deserialize::<DumpContents>(buf.as_slice()).unwrap();
-            assert_eq!(
-                variant, &decoded,
-                "Serialization encoding changed! Either `version::CURRENT` \
-                or `version::MIN` will need to be updated, \
-                or the changes to `crate::DumpContents` need to be reworked to \
-                avoid reordering or removing variants."
-            );
-        }
     }
 }

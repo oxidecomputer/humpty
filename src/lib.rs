@@ -95,11 +95,6 @@ pub const DUMP_CONTENTS_SINGLETASK: u8 = 1;
 pub const DUMP_CONTENTS_WHOLESYSTEM: u8 = 2;
 pub const DUMP_CONTENTS_INVALID: u8 = 0xff;
 
-/// Contents of a particular dump area
-///
-/// This type is serialized as a network data type; see the explanation in the
-/// `udp` module for how it's allowed to be edited, and remember to run the
-/// test suite.
 #[derive(
     Copy, Clone, Debug, SerializedSize, Serialize, Deserialize, PartialEq, Eq,
 )]
@@ -139,11 +134,6 @@ impl From<DumpContents> for u8 {
     }
 }
 
-/// Represents a single dump area in the system
-///
-/// This type is serialized as a network data type; see the explanation in the
-/// `udp` module for how it's allowed to be edited, and remember to run the
-/// test suite.
 #[derive(
     Copy, Clone, Debug, SerializedSize, Serialize, Deserialize, PartialEq, Eq,
 )]
