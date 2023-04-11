@@ -93,6 +93,7 @@ pub const DUMPER_JEFE: u8 = 2;
 pub const DUMP_CONTENTS_AVAILABLE: u8 = 0;
 pub const DUMP_CONTENTS_SINGLETASK: u8 = 1;
 pub const DUMP_CONTENTS_WHOLESYSTEM: u8 = 2;
+pub const DUMP_CONTENTS_TASKREGION: u8 = 3;
 pub const DUMP_CONTENTS_INVALID: u8 = 0xff;
 
 #[derive(
@@ -110,6 +111,9 @@ pub enum DumpContents {
 
     /// Dump area contains unknown contents
     Unknown,
+
+    /// Dump area contains a subset of a task's memory
+    TaskRegion,
 }
 
 impl From<u8> for DumpContents {
@@ -118,6 +122,7 @@ impl From<u8> for DumpContents {
             DUMP_CONTENTS_AVAILABLE => DumpContents::Available,
             DUMP_CONTENTS_SINGLETASK => DumpContents::SingleTask,
             DUMP_CONTENTS_WHOLESYSTEM => DumpContents::WholeSystem,
+            DUMP_CONTENTS_TASKREGION => DumpContents::TaskRegion,
             _ => DumpContents::Unknown,
         }
     }
@@ -129,7 +134,8 @@ impl From<DumpContents> for u8 {
             DumpContents::Available => DUMP_CONTENTS_AVAILABLE,
             DumpContents::SingleTask => DUMP_CONTENTS_SINGLETASK,
             DumpContents::WholeSystem => DUMP_CONTENTS_WHOLESYSTEM,
-            _ => DUMP_CONTENTS_INVALID,
+            DumpContents::TaskRegion => DUMP_CONTENTS_TASKREGION,
+            DumpContents::Unknown => DUMP_CONTENTS_INVALID,
         }
     }
 }
@@ -211,6 +217,7 @@ pub struct DumpSegmentHeader {
     pub length: u32,
 }
 
+#[derive(Debug)]
 pub enum DumpSegment {
     Data(DumpSegmentData),
     Register(DumpRegister),
@@ -472,6 +479,35 @@ pub fn get_dump_area<T>(
     }
 }
 
+/// Converts from a dump area address into an index
+///
+/// The given address must contain a valid dump area header and be reachable
+/// through the linked list starting at `base`.
+///
+/// This function is `O(N)` based on the length of the linked list.
+pub fn dump_address_to_index<T>(
+    base: u32,
+    target: u32,
+    mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
+) -> Result<u8, DumpError<T>> {
+    let mut address = base;
+    let mut i = 0;
+
+    loop {
+        let header = DumpAreaHeader::read_and_check(address, &mut read)?;
+        if address == target {
+            return Ok(i);
+        }
+
+        if header.next == 0 {
+            return Err(DumpError::InvalidIndex);
+        }
+
+        address = header.next;
+        i += 1;
+    }
+}
+
 fn claim_all_dump_areas<T>(
     base: u32,
     mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
@@ -540,7 +576,9 @@ pub fn claim_dump_area<T>(
         return claim_all_dump_areas(base, &mut read, &mut write);
     }
 
-    if contents != DumpContents::SingleTask {
+    if contents != DumpContents::SingleTask
+        && contents != DumpContents::TaskRegion
+    {
         return Err(DumpError::InvalidAgent);
     }
 
@@ -572,6 +610,45 @@ pub fn claim_dump_area<T>(
 
         address = header.next;
     })
+}
+
+///
+/// Called by the dump agent proxy to release dump areas starting at the given
+/// index.
+///
+/// All dump areas at and after the given index are reinitialized.
+///
+pub fn release_dump_areas_from<T>(
+    base: u32,
+    index: u8,
+    mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
+    mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
+) -> Result<(), DumpError<T>> {
+    let area = get_dump_area(base, index, &mut read)?;
+
+    let mut address = area.address;
+    while address != 0 {
+        let mut header = DumpAreaHeader::read_and_check(address, &mut read)?;
+
+        // Because dump areas are always claimed front-to-back, once we find an
+        // available area, then we can stop looping immediately.
+        if header.contents == DUMP_CONTENTS_AVAILABLE {
+            break;
+        }
+
+        // Reset this header
+        header.nsegments = 0;
+        header.written = core::mem::size_of::<DumpAreaHeader>() as u32;
+        header.dumper = DUMPER_NONE;
+        header.contents = DUMP_CONTENTS_AVAILABLE;
+
+        // Write it back!
+        write(address, header.as_bytes())
+            .map_err(|e| DumpError::BadAgentWrite(address, e))?;
+
+        address = header.next;
+    }
+    Ok(())
 }
 
 ///
@@ -694,7 +771,9 @@ pub fn dump<T, const N: usize, const V: u8>(
         // It is safe to check the contents here:  if we are dumping a single
         // task, we know that we are within the same domain of the claimant.
         //
-        if contents != DUMP_CONTENTS_SINGLETASK {
+        if contents != DUMP_CONTENTS_SINGLETASK
+            && contents != DUMP_CONTENTS_TASKREGION
+        {
             return Err(DumpError::IncorrectlyClaimedTaskDump);
         }
 
