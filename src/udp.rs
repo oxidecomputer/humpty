@@ -134,7 +134,7 @@ pub enum Error {
     // This are deliberately put at the beginning so that new Hubris errors can
     // be added to the end without changing the encoding order.
     DeserializeError,
-    VersionMismatch,
+    VersionMismatch { ours: u8, theirs: u8 },
 
     // Error types from `DumpAgentError`
     DumpAgentUnsupported,
@@ -194,7 +194,7 @@ mod encoding_tests {
         let mut buf = [0u8; Error::MAX_SIZE];
         const TEST_DATA: [Error; 24] = [
             Error::DeserializeError,
-            Error::VersionMismatch,
+            Error::VersionMismatch { ours: 0, theirs: 0 },
             Error::DumpAgentUnsupported,
             Error::InvalidArea,
             Error::BadOffset,
@@ -231,6 +231,10 @@ mod encoding_tests {
                 avoid reordering or removing variants."
             );
         }
+
+        let r = Error::VersionMismatch { ours: 123, theirs: 251 };
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[..size], [1, 123, 251]);
     }
 
     #[test]
