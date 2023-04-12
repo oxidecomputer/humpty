@@ -72,10 +72,10 @@ pub enum Request {
     /// Initialize dump context, overwriting any taken dump
     InitializeDump,
 
-    /// Add a segment to a dump
+    /// Adds a segment to a whole-system dump
     AddDumpSegment { address: u32, length: u32 },
 
-    /// Take dump
+    /// Take a whole-system dump
     TakeDump,
 }
 
