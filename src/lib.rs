@@ -61,6 +61,8 @@
 //!  4. Dump is retrieved by Humility for decompressing and processing.
 //!
 
+pub mod udp;
+
 use hubpack::SerializedSize;
 use serde::{Deserialize, Serialize};
 use zerocopy::{AsBytes, FromBytes};
