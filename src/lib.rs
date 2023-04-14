@@ -614,19 +614,15 @@ pub fn claim_dump_area<T>(
 
 ///
 /// Called by the dump agent proxy to release dump areas starting at the given
-/// index.
+/// address, which must point to a valid `DumpAreaHeader`.
 ///
 /// All dump areas at and after the given index are reinitialized.
 ///
 pub fn release_dump_areas_from<T>(
-    base: u32,
-    index: u8,
+    mut address: u32,
     mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
     mut write: impl FnMut(u32, &[u8]) -> Result<(), T>,
 ) -> Result<(), DumpError<T>> {
-    let area = get_dump_area(base, index, &mut read)?;
-
-    let mut address = area.address;
     while address != 0 {
         let mut header = DumpAreaHeader::read_and_check(address, &mut read)?;
 
