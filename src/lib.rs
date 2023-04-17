@@ -140,7 +140,9 @@ impl From<DumpContents> for u8 {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Copy, Clone, Debug, SerializedSize, Serialize, Deserialize, PartialEq, Eq,
+)]
 pub struct DumpAreaRegion {
     /// Base address of this dump area
     pub address: u32,
@@ -148,7 +150,9 @@ pub struct DumpAreaRegion {
     pub length: u32,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Copy, Clone, Debug, SerializedSize, Serialize, Deserialize, PartialEq, Eq,
+)]
 pub struct DumpArea {
     /// Memory range covered by this dump area
     pub region: DumpAreaRegion,
