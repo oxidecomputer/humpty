@@ -140,13 +140,24 @@ impl From<DumpContents> for u8 {
     }
 }
 
-#[derive(
-    Copy, Clone, Debug, SerializedSize, Serialize, Deserialize, PartialEq, Eq,
-)]
-pub struct DumpArea {
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct DumpAreaRegion {
+    /// Base address of this dump area
     pub address: u32,
+    /// Length of this dump area, in bytes
     pub length: u32,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct DumpArea {
+    /// Memory range covered by this dump area
+    pub region: DumpAreaRegion,
+
+    /// Contents of this dump area
     pub contents: DumpContents,
+
+    /// Index of this dump area in the global linked list
+    pub index: u8,
 }
 
 #[derive(Copy, Clone, Debug, FromBytes, AsBytes, PartialEq, Eq)]
@@ -389,7 +400,7 @@ pub unsafe fn to_mem(addr: u32, buf: &[u8]) -> Result<(), ()> {
 /// Initialize the dump areas based on the specified list.
 ///
 pub fn initialize_dump_areas(
-    areas: &[DumpArea],
+    areas: &[DumpAreaRegion],
     chunksize: Option<usize>,
 ) -> Option<u32> {
     let mut next = 0;
@@ -418,7 +429,7 @@ pub fn initialize_dump_areas(
                     nsegments: 0,
                     written: core::mem::size_of::<DumpAreaHeader>() as u32,
                     length,
-                    contents: area.contents.into(),
+                    contents: DUMP_CONTENTS_AVAILABLE,
                     dumper: DUMPER_NONE,
                     next,
                 }
@@ -464,39 +475,10 @@ pub fn get_dump_area<T>(
 
         if index == i {
             return Ok(DumpArea {
-                address,
-                length: header.length,
+                region: DumpAreaRegion { address, length: header.length },
                 contents: DumpContents::from(header.contents),
+                index: i,
             });
-        }
-
-        if header.next == 0 {
-            return Err(DumpError::InvalidIndex);
-        }
-
-        address = header.next;
-        i += 1;
-    }
-}
-
-/// Converts from a dump area address into an index
-///
-/// The given address must contain a valid dump area header and be reachable
-/// through the linked list starting at `base`.
-///
-/// This function is `O(N)` based on the length of the linked list.
-pub fn dump_address_to_index<T>(
-    base: u32,
-    target: u32,
-    mut read: impl FnMut(u32, &mut [u8], bool) -> Result<(), T>,
-) -> Result<u8, DumpError<T>> {
-    let mut address = base;
-    let mut i = 0;
-
-    loop {
-        let header = DumpAreaHeader::read_and_check(address, &mut read)?;
-        if address == target {
-            return Ok(i);
         }
 
         if header.next == 0 {
@@ -526,9 +508,9 @@ fn claim_all_dump_areas<T>(
     // therefore they are.  Claim 'em all...
     //
     let rval = Some(DumpArea {
-        address,
-        length: header.length,
+        region: DumpAreaRegion { address, length: header.length },
         contents: contents.into(),
+        index: 0,
     });
 
     loop {
@@ -583,6 +565,7 @@ pub fn claim_dump_area<T>(
     }
 
     let contents: u8 = contents.into();
+    let mut index = 0;
 
     Ok(loop {
         let mut header = DumpAreaHeader::read_and_check(address, &mut read)?;
@@ -598,9 +581,9 @@ pub fn claim_dump_area<T>(
             }
 
             break Some(DumpArea {
-                address,
-                length: header.length,
+                region: DumpAreaRegion { address, length: header.length },
                 contents: contents.into(),
+                index,
             });
         }
 
@@ -609,6 +592,7 @@ pub fn claim_dump_area<T>(
         }
 
         address = header.next;
+        index += 1;
     })
 }
 
