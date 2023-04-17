@@ -13,9 +13,10 @@ use serde::{Deserialize, Serialize};
 
 pub mod version {
     pub const V1: u8 = 1;
+    pub const V2: u8 = 2;
 
     /// The current version of the messaging protocol.
-    pub const CURRENT: u8 = V1;
+    pub const CURRENT: u8 = V2;
 
     /// The minimum supported version that is compatible with the current.
     ///
@@ -77,6 +78,15 @@ pub enum Request {
 
     /// Take a whole-system dump
     TakeDump,
+
+    /// Trigger a dump for a particular task
+    DumpTask { task_index: u32 },
+
+    /// Trigger a dump for a region within particular task
+    DumpTaskRegion { task_index: u32, start: u32, length: u32 },
+
+    /// Reinitializes dump context, starting at the given area
+    ReinitializeDumpFrom { index: u8 },
 }
 
 /// Complete message sent from the host to the target device
@@ -103,6 +113,9 @@ pub enum Response {
     InitializeDump,
     AddDumpSegment,
     TakeDump,
+    DumpTask(u8),
+    DumpTaskRegion(u8),
+    ReinitializeDumpFrom,
 }
 
 /// Complete reply sent from the host to the target device
@@ -234,11 +247,14 @@ mod encoding_tests {
     #[test]
     fn test_request_encoding_unchanged() {
         let mut buf = [0u8; Request::MAX_SIZE];
-        const TEST_DATA: [Request; 4] = [
+        const TEST_DATA: [Request; 7] = [
             Request::ReadDump { index: 0, offset: 0 },
             Request::InitializeDump,
             Request::AddDumpSegment { address: 0, length: 0 },
             Request::TakeDump,
+            Request::DumpTask { task_index: 0 },
+            Request::DumpTaskRegion { task_index: 0, start: 0, length: 0 },
+            Request::ReinitializeDumpFrom { index: 0 },
         ];
 
         for (variant_id, variant) in TEST_DATA.iter().enumerate() {
@@ -261,6 +277,19 @@ mod encoding_tests {
         let r = Request::AddDumpSegment { address: 123, length: 321 };
         let size = hubpack::serialize(&mut buf, &r).unwrap();
         assert_eq!(buf[..size], [2, 123, 0, 0, 0, 65, 1, 0, 0]);
+
+        let r = Request::DumpTask { task_index: 101 };
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[..size], [4, 101, 0, 0, 0]);
+
+        let r =
+            Request::DumpTaskRegion { task_index: 101, start: 123, length: 99 };
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[..size], [5, 101, 0, 0, 0, 123, 0, 0, 0, 99, 0, 0, 0]);
+
+        let r = Request::ReinitializeDumpFrom { index: 123 };
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[..size], [6, 123]);
     }
 
     #[test]
@@ -296,11 +325,14 @@ mod encoding_tests {
     #[test]
     fn test_response_encoding_unchanged() {
         let mut buf = [0u8; Response::MAX_SIZE];
-        const TEST_DATA: [Response; 4] = [
+        const TEST_DATA: [Response; 7] = [
             Response::ReadDump([0u8; DUMP_READ_SIZE]),
             Response::InitializeDump,
             Response::AddDumpSegment,
             Response::TakeDump,
+            Response::DumpTask(0),
+            Response::DumpTaskRegion(0),
+            Response::ReinitializeDumpFrom,
         ];
 
         for (variant_id, variant) in TEST_DATA.iter().enumerate() {
@@ -324,5 +356,13 @@ mod encoding_tests {
         let size = hubpack::serialize(&mut buf, &r).unwrap();
         assert_eq!(size, 257);
         assert_eq!(buf[1..], array);
+
+        let r = Response::DumpTask(123);
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[..size], [4, 123]);
+
+        let r = Response::DumpTaskRegion(35);
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[..size], [5, 35]);
     }
 }
