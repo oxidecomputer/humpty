@@ -14,9 +14,10 @@ use serde::{Deserialize, Serialize};
 pub mod version {
     pub const V1: u8 = 1;
     pub const V2: u8 = 2;
+    pub const V3: u8 = 3;
 
     /// The current version of the messaging protocol.
-    pub const CURRENT: u8 = V2;
+    pub const CURRENT: u8 = V3;
 
     /// The minimum supported version that is compatible with the current.
     ///
@@ -46,6 +47,7 @@ pub mod version {
 }
 
 pub const DUMP_READ_SIZE: usize = 256;
+pub const IMAGE_ID_SIZE: usize = 8;
 
 #[derive(
     Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, SerializedSize,
@@ -87,6 +89,9 @@ pub enum Request {
 
     /// Reinitializes dump context, starting at the given area
     ReinitializeDumpFrom { index: u8 },
+
+    /// Return the image ID
+    GetImageId,
 }
 
 /// Complete message sent from the host to the target device
@@ -116,6 +121,7 @@ pub enum Response {
     DumpTask(u8),
     DumpTaskRegion(u8),
     ReinitializeDumpFrom,
+    GetImageId([u8; IMAGE_ID_SIZE]),
 }
 
 /// Complete reply sent from the host to the target device
@@ -174,7 +180,7 @@ pub enum Error {
 mod encoding_tests {
     use super::{
         Error, Header, Request, RequestMessage, Response, ResponseMessage,
-        DUMP_READ_SIZE,
+        DUMP_READ_SIZE, IMAGE_ID_SIZE,
     };
     use core::convert::TryFrom;
     use hubpack::SerializedSize;
@@ -247,7 +253,7 @@ mod encoding_tests {
     #[test]
     fn test_request_encoding_unchanged() {
         let mut buf = [0u8; Request::MAX_SIZE];
-        const TEST_DATA: [Request; 7] = [
+        const TEST_DATA: [Request; 8] = [
             Request::ReadDump { index: 0, offset: 0 },
             Request::InitializeDump,
             Request::AddDumpSegment { address: 0, length: 0 },
@@ -255,6 +261,7 @@ mod encoding_tests {
             Request::DumpTask { task_index: 0 },
             Request::DumpTaskRegion { task_index: 0, start: 0, length: 0 },
             Request::ReinitializeDumpFrom { index: 0 },
+            Request::GetImageId,
         ];
 
         for (variant_id, variant) in TEST_DATA.iter().enumerate() {
@@ -325,7 +332,7 @@ mod encoding_tests {
     #[test]
     fn test_response_encoding_unchanged() {
         let mut buf = [0u8; Response::MAX_SIZE];
-        const TEST_DATA: [Response; 7] = [
+        const TEST_DATA: [Response; 8] = [
             Response::ReadDump([0u8; DUMP_READ_SIZE]),
             Response::InitializeDump,
             Response::AddDumpSegment,
@@ -333,6 +340,7 @@ mod encoding_tests {
             Response::DumpTask(0),
             Response::DumpTaskRegion(0),
             Response::ReinitializeDumpFrom,
+            Response::GetImageId([0u8; IMAGE_ID_SIZE]),
         ];
 
         for (variant_id, variant) in TEST_DATA.iter().enumerate() {
@@ -364,5 +372,11 @@ mod encoding_tests {
         let r = Response::DumpTaskRegion(35);
         let size = hubpack::serialize(&mut buf, &r).unwrap();
         assert_eq!(buf[..size], [5, 35]);
+
+        let id = [0x1, 0xde, 0x0b, 0xad, 0xf0, 0xd, 0xca, 0xfe];
+        let r = Response::GetImageId(id);
+        let size = hubpack::serialize(&mut buf, &r).unwrap();
+        assert_eq!(buf[0], 7);
+        assert_eq!(buf[1..size], id);
     }
 }
