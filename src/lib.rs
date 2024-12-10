@@ -71,8 +71,8 @@ pub const DUMP_MAGIC: [u8; 4] = [0x1, 0xde, 0xde, 0xad];
 pub const DUMP_UNINITIALIZED: [u8; 4] = [0xba, 0xd, 0xca, 0xfe];
 pub const DUMP_SEGMENT_PAD: u8 = 0x55;
 
-const DUMP_SEGMENT_ALIGN: usize = 4;
-const DUMP_SEGMENT_MASK: usize = DUMP_SEGMENT_ALIGN - 1;
+pub const DUMP_SEGMENT_ALIGN: usize = 4;
+pub const DUMP_SEGMENT_MASK: usize = DUMP_SEGMENT_ALIGN - 1;
 
 pub const DUMP_REGISTER_MAGIC: [u8; 2] = [0xab, 0xba];
 pub const DUMP_TASK_MAGIC: [u8; 2] = [0xda, 0xda];
