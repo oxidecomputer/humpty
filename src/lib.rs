@@ -65,7 +65,7 @@ pub mod udp;
 
 use hubpack::SerializedSize;
 use serde::{Deserialize, Serialize};
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 pub const DUMP_MAGIC: [u8; 4] = [0x1, 0xde, 0xde, 0xad];
 pub const DUMP_UNINITIALIZED: [u8; 4] = [0xba, 0xd, 0xca, 0xfe];
@@ -164,7 +164,17 @@ pub struct DumpArea {
     pub index: u8,
 }
 
-#[derive(Copy, Clone, Debug, FromBytes, AsBytes, PartialEq, Eq)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    FromBytes,
+    IntoBytes,
+    Immutable,
+    KnownLayout,
+    PartialEq,
+    Eq,
+)]
 #[repr(C)]
 pub struct DumpAreaHeader {
     /// Magic to indicate that this is an area header
@@ -206,9 +216,9 @@ impl DumpAreaHeader {
             return Err(DumpError::BadHeaderRead(address, e));
         }
 
-        let header = match DumpAreaHeader::read_from(&hbuf[..]) {
-            Some(header) => header,
-            None => {
+        let header = match DumpAreaHeader::read_from_bytes(&hbuf[..]) {
+            Ok(header) => header,
+            Err(_) => {
                 return Err(DumpError::BadDumpHeader(address));
             }
         };
@@ -225,7 +235,7 @@ impl DumpAreaHeader {
     }
 }
 
-#[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct DumpSegmentHeader {
     pub address: u32,
@@ -245,13 +255,19 @@ impl DumpSegment {
         if dump.len() < 2 {
             None
         } else if dump[..2] == DUMP_REGISTER_MAGIC {
-            DumpRegister::read_from_prefix(dump).map(DumpSegment::Register)
+            DumpRegister::read_from_prefix(dump)
+                .map(|(register, _)| DumpSegment::Register(register))
+                .ok()
         } else if dump[..2] == DUMP_TASK_MAGIC {
-            DumpTask::read_from_prefix(dump).map(DumpSegment::Task)
+            DumpTask::read_from_prefix(dump)
+                .map(|(task, _)| DumpSegment::Task(task))
+                .ok()
         } else if (dump[0] as usize) & DUMP_SEGMENT_MASK != 0 {
             Some(DumpSegment::Unknown([dump[0], dump[1]]))
         } else {
-            DumpSegmentData::read_from_prefix(dump).map(DumpSegment::Data)
+            DumpSegmentData::read_from_prefix(dump)
+                .map(|(data, _)| DumpSegment::Data(data))
+                .ok()
         }
     }
 }
@@ -261,7 +277,7 @@ impl DumpSegment {
 // Note that we very much depend on endianness here:  any unused space at the
 // end of of a single area will be filled with DUMP_SEGMENT_PAD.
 //
-#[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 #[cfg(target_endian = "little")]
 pub struct DumpSegmentData {
@@ -270,7 +286,7 @@ pub struct DumpSegmentData {
     pub uncompressed_length: u16,
 }
 
-#[derive(Copy, Clone, Debug, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct DumpRegister {
     /// Register magic -- must be DUMP_REGISTER_MAGIC
@@ -295,7 +311,17 @@ impl DumpRegister {
     }
 }
 
-#[derive(Copy, Clone, Debug, FromBytes, AsBytes, PartialEq, Eq)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    FromBytes,
+    IntoBytes,
+    Immutable,
+    KnownLayout,
+    PartialEq,
+    Eq,
+)]
 #[repr(C)]
 pub struct DumpTask {
     /// task magic -- must be DUMP_TASK_MAGIC
@@ -813,9 +839,9 @@ pub fn dump<T, const N: usize, const V: u8>(
         }
 
         let segment =
-            match DumpSegmentHeader::read_from(&buf[..seg_header_size]) {
-                Some(segment) => segment,
-                None => {
+            match DumpSegmentHeader::read_from_bytes(&buf[..seg_header_size]) {
+                Ok(segment) => segment,
+                Err(_) => {
                     return Err(DumpError::BadSegmentHeader(saddr));
                 }
             };
