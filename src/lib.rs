@@ -66,7 +66,7 @@ pub mod udp;
 use hubpack::SerializedSize;
 use serde::{Deserialize, Serialize};
 use zerocopy::{FromBytes, IntoBytes};
-use zerocopy_derive::{FromBytes, Immutable, IntoBytes, KnownLayout};
+use zerocopy_derive::*;
 
 pub const DUMP_MAGIC: [u8; 4] = [0x1, 0xde, 0xde, 0xad];
 pub const DUMP_UNINITIALIZED: [u8; 4] = [0xba, 0xd, 0xca, 0xfe];
