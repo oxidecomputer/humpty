@@ -65,7 +65,8 @@ pub mod udp;
 
 use hubpack::SerializedSize;
 use serde::{Deserialize, Serialize};
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
+use zerocopy::{FromBytes, IntoBytes};
+use zerocopy_derive::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 pub const DUMP_MAGIC: [u8; 4] = [0x1, 0xde, 0xde, 0xad];
 pub const DUMP_UNINITIALIZED: [u8; 4] = [0xba, 0xd, 0xca, 0xfe];
@@ -83,7 +84,7 @@ pub const DUMPER_EXTERNAL: u8 = 1;
 pub const DUMPER_JEFE: u8 = 2;
 
 //
-// Constants for dump contents.  Other than [`DUMP_CONTENTS_AVAILABLE`] being
+// Constants for dump contents.  Other than [`DUMP_CONTENTS_AVAILABLE`] being'd
 // denoted with zero, the specific values should not be assumed to have
 // meaning across domains.  That is, these contents constants can be used to
 // assert invariants *within* a single domain, but should *not* be used to
