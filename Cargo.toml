@@ -4,7 +4,8 @@ version = "0.1.4"
 edition = "2018"
 
 [dependencies]
-zerocopy = "0.6.1"
+zerocopy = "0.8.25"
+zerocopy-derive = "0.8.25"
 static_assertions = { version = "1", default-features = false }
 lzss = { version = "0.8", default-features = false }
 hubpack = { version = "0.1", default-features = false }
