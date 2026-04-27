@@ -386,7 +386,6 @@ pub enum DumpError<T> {
 //
 pub type DumpLzss = lzss::Lzss<6, 4, 0x20, { 1 << 6 }, { 2 << 6 }>;
 
-///
 /// A convenience routine to offer as the `read` parameter to routines that
 /// operate on a dump area when that dump area is backed by memory (i.e.,
 /// within the same domain).  This should *only* be used as a parameter to
@@ -398,15 +397,15 @@ pub type DumpLzss = lzss::Lzss<6, 4, 0x20, { 1 << 6 }, { 2 << 6 }>;
 /// closure to read from a dump area, and only then when the dump area is
 /// backed by a memory that can be operated upon as a memory (i.e., with
 /// the same allowances with respect to address alignment).
-///
 #[allow(clippy::result_unit_err)]
 pub unsafe fn from_mem(addr: u32, buf: &mut [u8]) -> Result<(), ()> {
-    let src = core::slice::from_raw_parts(addr as *const u8, buf.len());
-    buf.copy_from_slice(src);
+    let src = addr as *mut u8;
+    // SAFETY: the caller asserts that addr is a valid pointer to a region of at
+    // least `buf.len()` bytes
+    unsafe { src.copy_to_nonoverlapping(buf.as_mut_ptr(), buf.len()) }
     Ok(())
 }
 
-///
 /// A convenience routine to offer as the `write` parameter to routines that
 /// operate on a dump area when that dump area is backed by memory (i.e.,
 /// within the same domain).  As with [`from_mem`], this should *only* be used
@@ -419,18 +418,22 @@ pub unsafe fn from_mem(addr: u32, buf: &mut [u8]) -> Result<(), ()> {
 /// closure to write to a dump area, and only then when the dump area is
 /// backed by a memory that can be operated upon as a memory (i.e., with
 /// the same allowances with respect to address alignment).
-///
 #[allow(clippy::result_unit_err)]
 pub unsafe fn to_mem(addr: u32, buf: &[u8]) -> Result<(), ()> {
-    let dest = core::slice::from_raw_parts_mut(addr as *mut u8, buf.len());
-    dest.copy_from_slice(buf);
+    let dest = addr as *mut u8;
+    // SAFETY: the caller asserts that addr is a valid pointer to a region of at
+    // least `buf.len()` bytes
+    unsafe { dest.copy_from_nonoverlapping(buf.as_ptr(), buf.len()) }
     Ok(())
 }
 
 ///
 /// Initialize the dump areas based on the specified list.
 ///
-pub fn initialize_dump_areas(
+/// # Safety
+/// `areas` must refer to valid writeable memory (i.e. exclusively owned when
+/// this function is called).
+pub unsafe fn initialize_dump_areas(
     areas: &[DumpAreaRegion],
     chunksize: Option<usize>,
 ) -> Option<u32> {
