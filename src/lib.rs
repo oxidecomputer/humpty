@@ -386,6 +386,7 @@ pub enum DumpError<T> {
 //
 pub type DumpLzss = lzss::Lzss<6, 4, 0x20, { 1 << 6 }, { 2 << 6 }>;
 
+///
 /// A convenience routine to offer as the `read` parameter to routines that
 /// operate on a dump area when that dump area is backed by memory (i.e.,
 /// within the same domain).  This should *only* be used as a parameter to
@@ -393,10 +394,12 @@ pub type DumpLzss = lzss::Lzss<6, 4, 0x20, { 1 << 6 }, { 2 << 6 }>;
 ///
 /// # Safety
 ///
-/// Should only be used as a parameter to Humpty routines that take a
-/// closure to read from a dump area, and only then when the dump area is
-/// backed by a memory that can be operated upon as a memory (i.e., with
-/// the same allowances with respect to address alignment).
+/// Should only be used as a parameter to Humpty routines that take a closure to
+/// read from a dump area, and only then when the dump area is backed by a
+/// memory that can be operated upon as a memory (i.e., with the same allowances
+/// with respect to address alignment).  The memory range of `addr..addr +
+/// buf.len()` must not overlap with `buf` itself.
+///
 #[allow(clippy::result_unit_err)]
 pub unsafe fn from_mem(addr: u32, buf: &mut [u8]) -> Result<(), ()> {
     let src = addr as *mut u8;
@@ -406,6 +409,7 @@ pub unsafe fn from_mem(addr: u32, buf: &mut [u8]) -> Result<(), ()> {
     Ok(())
 }
 
+///
 /// A convenience routine to offer as the `write` parameter to routines that
 /// operate on a dump area when that dump area is backed by memory (i.e.,
 /// within the same domain).  As with [`from_mem`], this should *only* be used
@@ -414,10 +418,12 @@ pub unsafe fn from_mem(addr: u32, buf: &mut [u8]) -> Result<(), ()> {
 ///
 /// # Safety
 ///
-/// Should only be used as a parameter to Humpty routines that take a
-/// closure to write to a dump area, and only then when the dump area is
-/// backed by a memory that can be operated upon as a memory (i.e., with
-/// the same allowances with respect to address alignment).
+/// Should only be used as a parameter to Humpty routines that take a closure to
+/// write to a dump area, and only then when the dump area is backed by a memory
+/// that can be operated upon as a memory (i.e., with the same allowances with
+/// respect to address alignment).  The memory range of `addr..addr + buf.len()`
+/// must not overlap with `buf` itself.
+///
 #[allow(clippy::result_unit_err)]
 pub unsafe fn to_mem(addr: u32, buf: &[u8]) -> Result<(), ()> {
     let dest = addr as *mut u8;
@@ -427,7 +433,6 @@ pub unsafe fn to_mem(addr: u32, buf: &[u8]) -> Result<(), ()> {
     Ok(())
 }
 
-///
 /// Initialize the dump areas based on the specified list.
 ///
 /// # Safety
