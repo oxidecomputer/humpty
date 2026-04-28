@@ -394,15 +394,18 @@ pub type DumpLzss = lzss::Lzss<6, 4, 0x20, { 1 << 6 }, { 2 << 6 }>;
 ///
 /// # Safety
 ///
-/// Should only be used as a parameter to Humpty routines that take a
-/// closure to read from a dump area, and only then when the dump area is
-/// backed by a memory that can be operated upon as a memory (i.e., with
-/// the same allowances with respect to address alignment).
+/// Should only be used as a parameter to Humpty routines that take a closure to
+/// read from a dump area, and only then when the dump area is backed by a
+/// memory that can be operated upon as a memory (i.e., with the same allowances
+/// with respect to address alignment).  The memory range of `addr..addr +
+/// buf.len()` must not overlap with `buf` itself.
 ///
 #[allow(clippy::result_unit_err)]
 pub unsafe fn from_mem(addr: u32, buf: &mut [u8]) -> Result<(), ()> {
-    let src = core::slice::from_raw_parts(addr as *const u8, buf.len());
-    buf.copy_from_slice(src);
+    let src = addr as *mut u8;
+    // SAFETY: the caller asserts that addr is a valid pointer to a region of at
+    // least `buf.len()` bytes
+    unsafe { src.copy_to_nonoverlapping(buf.as_mut_ptr(), buf.len()) }
     Ok(())
 }
 
@@ -415,22 +418,27 @@ pub unsafe fn from_mem(addr: u32, buf: &mut [u8]) -> Result<(), ()> {
 ///
 /// # Safety
 ///
-/// Should only be used as a parameter to Humpty routines that take a
-/// closure to write to a dump area, and only then when the dump area is
-/// backed by a memory that can be operated upon as a memory (i.e., with
-/// the same allowances with respect to address alignment).
+/// Should only be used as a parameter to Humpty routines that take a closure to
+/// write to a dump area, and only then when the dump area is backed by a memory
+/// that can be operated upon as a memory (i.e., with the same allowances with
+/// respect to address alignment).  The memory range of `addr..addr + buf.len()`
+/// must not overlap with `buf` itself.
 ///
 #[allow(clippy::result_unit_err)]
 pub unsafe fn to_mem(addr: u32, buf: &[u8]) -> Result<(), ()> {
-    let dest = core::slice::from_raw_parts_mut(addr as *mut u8, buf.len());
-    dest.copy_from_slice(buf);
+    let dest = addr as *mut u8;
+    // SAFETY: the caller asserts that addr is a valid pointer to a region of at
+    // least `buf.len()` bytes
+    unsafe { dest.copy_from_nonoverlapping(buf.as_ptr(), buf.len()) }
     Ok(())
 }
 
-///
 /// Initialize the dump areas based on the specified list.
 ///
-pub fn initialize_dump_areas(
+/// # Safety
+/// `areas` must refer to valid writeable memory (i.e. exclusively owned when
+/// this function is called).
+pub unsafe fn initialize_dump_areas(
     areas: &[DumpAreaRegion],
     chunksize: Option<usize>,
 ) -> Option<u32> {
